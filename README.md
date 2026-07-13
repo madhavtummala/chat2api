@@ -51,19 +51,20 @@ python -m src.main              # or: uvicorn src.api.app:app
 Then call it like the OpenAI API:
 
 ```bash
-curl http://localhost:8000/v1/chat/completions \
+curl http://localhost:9000/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"model":"expressai-default","stream":true,
+  -d '{"model":"GPT OSS 120B","stream":true,
        "messages":[{"role":"user","content":"Hello!"}]}'
 ```
 
-Or with the OpenAI SDK:
+Or with the OpenAI SDK (`model` must be one the active provider offers — see
+`GET /v1/models` — or omit it to use the provider's default):
 
 ```python
 from openai import OpenAI
-client = OpenAI(base_url="http://localhost:8000/v1", api_key="unused")
+client = OpenAI(base_url="http://localhost:9000/v1", api_key="unused")
 print(client.chat.completions.create(
-    model="expressai-default",
+    model="GPT OSS 120B",
     messages=[{"role": "user", "content": "Hello!"}],
 ).choices[0].message.content)
 ```
@@ -71,8 +72,10 @@ print(client.chat.completions.create(
 ## Endpoints
 
 - `POST /v1/chat/completions` — streaming (SSE) and non-streaming.
+- `POST /v1/responses` — Responses API with a server-side agentic loop (executes
+  MCP tools itself); enabled by default, toggle with `CHAT2API_ENABLE_RESPONSES`.
 - `GET  /v1/models` — models advertised by the active provider.
-- `GET  /health` — liveness check.
+- `GET  /health` — liveness check (`?deep=1` re-probes login state).
 
 Set `CHAT2API_API_KEYS=key1,key2` to require `Authorization: Bearer <key>`
 (auth is off by default for local use).
@@ -137,10 +140,17 @@ advertises them to the model alongside client-declared tools — namespaced
 
 | Name | Target | Auth | Notes |
 |------|--------|------|-------|
-| `expressai` | `app.expressai.com` | login (persisted) | selectors need tuning against the live site |
+| `expressai` | `app.expressai.com` | login (persisted) | tools, web-search toggle, attachments, model picker |
+| `perplexity` | `perplexity.ai` | **optional** | works logged-out (login unlocks more models); native web search (always on), self-enabled incognito, model picker, `reasoning_effort` → Thinking mode |
 | `googleaimode` | Google Search AI Mode (`udm=50`) | **none** | auth-free; great for demos, but Google throttles heavy automated use |
 
 Select with `CHAT2API_PROVIDER=<name>`.
+
+A provider only advertises the capabilities its UI has, so unsupported request
+fields degrade gracefully: an omitted/unsupported `web_search` is a no-op (e.g.
+Perplexity always searches), and `reasoning_effort` only acts where a "thinking"
+toggle exists. Perplexity keeps proxied chats out of your history by enabling
+**incognito** itself.
 
 ### Web search & attachments (provider capabilities)
 
@@ -166,23 +176,29 @@ API); `data:` URLs are decoded and uploaded into the chat UI:
 Sending attachments to a provider that can't accept them returns `400`; remote
 (non-`data:`) URLs are skipped.
 
+**Reasoning ("thinking") mode** — pass OpenAI's `reasoning_effort` (chat
+completions) or `reasoning: {"effort": ...}` (responses). Where the UI has a
+thinking toggle (Perplexity, on reasoning-capable models), `minimal`/`none`
+turns it off and any other value turns it on; an absent value leaves the model
+default, and providers without the toggle ignore it.
+
 ### Models
 
-`/v1/models` reports the active provider's **live** catalogue. A provider seeds
-it from the static `available_models`, but can override `async list_models()` to
-**discover models from the site** (e.g. scrape the model picker); the app calls
-`refresh_models()` at startup and serves whatever it returns. Per request,
-`select_model(page, model)` switches the UI to the requested model before
-submitting, and only when it differs from the one already selected (default
-no-op for single-model UIs). A model the provider doesn't offer is rejected with
-`404 model_not_found` — we never try to switch to an unknown model; an omitted
-model uses the provider's default.
+`/v1/models` reports the active provider's catalogue — normally the static
+`available_models` list (e.g. ExpressAI's models, Perplexity's picker options).
+A provider may instead override `async list_models()` to discover them live from
+the site; the app calls `refresh_models()` at startup and serves whatever it
+returns. Per request, `select_model(page, model)` switches the UI to the
+requested model before submitting, and only when it differs from the one already
+selected (a no-op for single-model UIs). A model the provider doesn't offer is
+rejected with `404 model_not_found` — we never switch to an unknown model; an
+omitted model uses the provider's default.
 
 ### Google AI Mode (auth-free demo backend)
 
 ```bash
 CHAT2API_PROVIDER=googleaimode python -m src.main
-curl http://localhost:8000/v1/chat/completions -H 'Content-Type: application/json' \
+curl http://localhost:9000/v1/chat/completions -H 'Content-Type: application/json' \
   -d '{"model":"google-ai-mode","messages":[{"role":"user","content":"capital of Japan?"}]}'
 ```
 

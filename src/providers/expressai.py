@@ -2,8 +2,8 @@
 
 All the browser-driving logic lives in :class:`BrowserChatProvider`; this file
 is just ExpressAI's `Selectors` + capabilities. The CSS selectors are tuned
-against the live site — re-run `scripts/inspect_provider.py expressai` if the
-DOM changes.
+against the live site — re-run
+`scripts/inspect_provider.py https://app.expressai.com` if the DOM changes.
 """
 
 from __future__ import annotations
