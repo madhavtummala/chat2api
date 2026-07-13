@@ -61,6 +61,8 @@ class Settings(BaseSettings):
 
     # ---- Provider-specific: ExpressAI -----------------------------------
     expressai_base_url: str = "https://app.expressai.com"
+    # ---- Provider-specific: Perplexity ----------------------------------
+    perplexity_base_url: str = "https://www.perplexity.ai"
     # How long to wait (seconds) for a full model response before giving up.
     response_timeout_s: float = 180.0
     # DOM polling interval (seconds) while streaming a response.

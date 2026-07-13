@@ -135,6 +135,10 @@ class ChatCompletionRequest(BaseModel):
     #   - `web_search` (vendor extension via extra_body)
     web_search_options: dict[str, Any] | None = None
     web_search: bool | None = None
+    # Reasoning/"thinking" effort (OpenAI-standard). For providers with a thinking
+    # toggle (Perplexity): "minimal"/"none" disables, any other value enables,
+    # absent leaves the model default untouched.
+    reasoning_effort: str | None = None
     # Optional: route repeated requests to the same browser conversation/tab.
     conversation_id: str | None = None
     user: str | None = None
@@ -171,6 +175,7 @@ class ChatCompletionRequest(BaseModel):
             max_tokens=self.max_tokens,
             stream=self.stream,
             web_search=self.resolve_web_search(),
+            reasoning_effort=self.reasoning_effort,
             attachments=self.collect_attachments(),
         )
 

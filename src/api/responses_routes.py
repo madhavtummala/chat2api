@@ -60,13 +60,17 @@ async def create_response(
         history.append(ChatMessage(role="system", content=body.instructions))
     history.extend(body.input_messages())
 
-    tool_defs = body.function_tools() + (
-        mcp.openai_tools() if mcp and mcp.has_tools else []
-    )
-    if tool_defs and not provider.supports_tools:
+    # Client-supplied function tools require tool support; server-configured MCP
+    # tools are best-effort and skipped for providers that can't emit tool calls
+    # (so e.g. Perplexity still answers with its own native search).
+    client_tools = body.function_tools()
+    if client_tools and not provider.supports_tools:
         raise HTTPException(
             400, f"Provider {provider.name!r} does not support tool calls."
         )
+    tool_defs = client_tools + (
+        mcp.openai_tools() if mcp and mcp.has_tools and provider.supports_tools else []
+    )
 
     try:
         output_items, output_text, status = await _run_loop(
@@ -115,7 +119,11 @@ async def _run_loop(
             messages.insert(
                 0, ChatMessage(role="system", content=build_tools_preamble(tool_defs, required))
             )
-        request = ChatRequest(messages=messages, model=body.model)
+        request = ChatRequest(
+            messages=messages,
+            model=body.model,
+            reasoning_effort=body.resolve_reasoning_effort(),
+        )
         text, tool_calls = await collect(provider, request, use_tools)
         if text:
             final_text = text

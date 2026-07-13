@@ -95,16 +95,19 @@ async def chat_completions(
     # Tools come from the client (function tools) plus any configured MCP
     # servers. Chat Completions delegates execution: parsed calls are returned
     # to the client (which owns/executes them), so we only list + inject here.
+    # A client that explicitly sends tools to a provider that can't emit tool
+    # calls is an error; but globally-configured MCP tools are best-effort — we
+    # simply skip them for such providers so the provider (e.g. Perplexity, with
+    # its own native search) still answers normally.
     client_tools = [t.model_dump() for t in body.tools or []]
-    mcp_tools = mcp.openai_tools() if mcp and mcp.has_tools else []
-    tool_defs = client_tools + mcp_tools
-    use_tools = bool(tool_defs) and body.tool_choice != "none"
-
-    if tool_defs and not provider.supports_tools:
+    if client_tools and not provider.supports_tools:
         raise HTTPException(
             status_code=400,
             detail=f"Provider {provider.name!r} does not support tool calls.",
         )
+    mcp_tools = mcp.openai_tools() if mcp and mcp.has_tools and provider.supports_tools else []
+    tool_defs = client_tools + mcp_tools
+    use_tools = bool(tool_defs) and body.tool_choice != "none"
 
     chat_request = body.to_chat_request()
     chat_request.model = model  # the validated, resolved model the provider selects

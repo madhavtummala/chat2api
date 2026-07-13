@@ -14,6 +14,7 @@ from ..config import Settings
 from .base import BaseChatProvider
 from .expressai import ExpressAIProvider
 from .google_aimode import GoogleAIModeProvider
+from .perplexity import PerplexityProvider
 
 _REGISTRY: dict[str, Type[BaseChatProvider]] = {}
 
@@ -42,3 +43,4 @@ def create_provider(
 # -- built-in providers ---------------------------------------------------
 register(ExpressAIProvider)
 register(GoogleAIModeProvider)
+register(PerplexityProvider)

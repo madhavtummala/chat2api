@@ -25,6 +25,18 @@ class ResponsesRequest(BaseModel):
     store: bool = True
     instructions: str | None = None
     max_output_tokens: int | None = None
+    # Reasoning/"thinking" effort: OpenAI sends `reasoning: {"effort": ...}`;
+    # some clients send it flat as `reasoning_effort`. Both are accepted.
+    reasoning: dict[str, Any] | None = None
+    reasoning_effort: str | None = None
+
+    def resolve_reasoning_effort(self) -> str | None:
+        if self.reasoning_effort:
+            return self.reasoning_effort
+        if isinstance(self.reasoning, dict):
+            effort = self.reasoning.get("effort")
+            return effort if isinstance(effort, str) else None
+        return None
 
     def input_messages(self) -> list[ChatMessage]:
         if isinstance(self.input, str):

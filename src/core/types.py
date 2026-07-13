@@ -40,6 +40,10 @@ class ChatRequest:
     stream: bool = False
     # Provider-specific capabilities, normalised from the OpenAI-compatible body.
     web_search: bool = False
+    # Reasoning/"thinking" effort (OpenAI `reasoning_effort`). None = leave the
+    # model default; "minimal"/"none" = off; any other value = on. Only providers
+    # with a thinking toggle (Perplexity) act on it.
+    reasoning_effort: str | None = None
     attachments: list[Attachment] = field(default_factory=list)
     extra: dict = field(default_factory=dict)
 
