@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.browser_profile/
+auth.json
+mcp.json
+.pytest_cache/
+*.egg-info/
+.DS_Store
+
+# probe/debug artifacts
+scripts/inspect_out.*

@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8" /><title>ExpressAI — Mock (logged out)</title></head>
+<body>
+  <!--
+    Mirrors app.expressai.com's LOGGED-OUT screen so the ExpressAI provider's
+    login_marker matches: a disabled composer whose placeholder asks you to sign
+    in, plus the "Sign in with ExpressVPN" button. Crucially there is no
+    `textarea[placeholder="Ask anything"]` (the ready_marker), so readiness never
+    resolves and logout is detected.
+  -->
+  <button type="button">Sign in with ExpressVPN</button>
+  <textarea placeholder="Please sign in to start chatting" disabled></textarea>
+</body>
+</html>

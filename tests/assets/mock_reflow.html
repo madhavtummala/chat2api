@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8" /><title>Mock ExpressAI — reflow</title><style>.hidden{display:none}</style></head>
+<body>
+  <!--
+    Reproduces the markdown-reflow case: the assistant reply (containing a single
+    <tool_call>) is streamed, then the rendered text is REWRITTEN non-append-only
+    (a prefix is added), just like `.prose` reflowing. The provider must not
+    re-emit already-sent text, so the tool call must be parsed exactly once.
+  -->
+  <div id="messages"></div>
+  <textarea placeholder="Ask anything" id="composer"></textarea>
+  <button title="Send message" type="button" id="send-btn">send</button>
+  <button title="New Chat" id="new-chat">New Chat</button>
+
+  <script>
+    const messages = document.getElementById("messages");
+    const composer = document.getElementById("composer");
+    const REPLY = 'Checking. <tool_call>{"name": "get_weather", "arguments": {"location": "Paris"}}</tool_call>';
+
+    document.getElementById("new-chat").addEventListener("click", () => { messages.innerHTML = ""; });
+
+    function send() {
+      const text = composer.value.trim();
+      if (!text) return;
+      composer.value = "";
+      const sendBtn = document.getElementById("send-btn");
+      sendBtn.setAttribute("title", "Stop");  // send -> stop while generating
+
+      const outer = document.createElement("div");
+      outer.className = "mr-auto";
+      const prose = document.createElement("div");
+      prose.className = "prose";
+      prose.setAttribute("data-generating", "true");
+      outer.appendChild(prose);
+      messages.appendChild(outer);
+
+      let i = 0;
+      const timer = setInterval(() => {
+        if (i < REPLY.length) {
+          prose.textContent += REPLY[i++];
+        } else {
+          clearInterval(timer);
+          // Reflow: rewrite non-append-only (add a visible prefix). With the old
+          // "resync" logic this re-emitted the whole reply -> duplicate tool call.
+          prose.textContent = "Result: " + REPLY;
+          prose.removeAttribute("data-generating");
+          sendBtn.setAttribute("title", "Send message");  // done -> send returns
+        }
+      }, 5);
+    }
+
+    document.getElementById("send-btn").addEventListener("click", send);
+    composer.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+    });
+  </script>
+</body>
+</html>

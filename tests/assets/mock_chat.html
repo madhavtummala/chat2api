@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Mock ExpressAI</title>
+  <style>.hidden{display:none}</style>
+</head>
+<body>
+  <!--
+    Mirrors app.expressai.com closely enough to exercise the ExpressAI provider
+    selectors unchanged:
+      - textarea[placeholder="Ask anything"]        -> prompt_input / ready_marker
+      - button[title="Send message"]                -> send_button
+      - "New Chat" button                            -> new_chat_button
+      - assistant bubbles `.mr-auto .prose`          -> assistant_message
+      - `.prose[data-generating]` while streaming    -> generating_indicator
+      - button > svg.lucide-chevron-down             -> model_selector
+      - [role=button].p-3 rows                        -> model_option(_rows)
+      - button[data-testid=web-search-btn][aria-pressed] -> web_search_toggle/active
+      - input[type=file][data-testid=file-input]     -> file_input
+
+    The assistant reply encodes the current model / web-search / attachment
+    count so the e2e tests can assert the provider drove those controls.
+  -->
+  <div id="messages"></div>
+  <textarea placeholder="Ask anything" id="composer"></textarea>
+
+  <!-- model picker -->
+  <div class="relative">
+    <button id="model-trigger">
+      <span id="model-name">GPT OSS 120B</span>
+      <svg class="lucide lucide-chevron-down" width="1" height="1"></svg>
+    </button>
+    <div id="model-list" class="hidden"></div>
+  </div>
+
+  <button data-testid="web-search-btn" aria-pressed="false" type="button">web</button>
+  <input type="file" data-testid="file-input" class="hidden" multiple />
+  <button title="Send message" type="button" id="send-btn">send</button>
+  <button id="new-chat" title="New Chat">New Chat</button>
+
+  <script>
+    const MODELS = ["GPT OSS 120B", "Nemotron 12B", "DeepSeek R1 Distill 32B",
+                    "Qwen2.5-VL 32B", "Qwen3.5 35B-A3B", "Gemma 4 31B"];
+    window.__tabId = Math.random().toString(36).slice(2, 6);
+    window.__turns = 0;
+    window.__model = "GPT OSS 120B";
+    window.__web = false;
+    window.__files = 0;
+
+    const messages = document.getElementById("messages");
+    const composer = document.getElementById("composer");
+    const modelList = document.getElementById("model-list");
+    const modelName = document.getElementById("model-name");
+
+    // Build model dropdown options (role=button rows with a p-3 class).
+    MODELS.forEach((m) => {
+      const row = document.createElement("div");
+      row.setAttribute("role", "button");
+      row.className = "w-full p-3 flex";
+      row.innerHTML = `<div class="font-medium text-sm">${m}</div>`;
+      row.addEventListener("click", () => {
+        window.__model = m;
+        modelName.textContent = m;
+        modelList.classList.add("hidden");
+      });
+      modelList.appendChild(row);
+    });
+    document.getElementById("model-trigger").addEventListener("click", () => {
+      modelList.classList.toggle("hidden");
+    });
+
+    document.querySelector("[data-testid=web-search-btn]").addEventListener("click", (e) => {
+      window.__web = !window.__web;
+      e.currentTarget.setAttribute("aria-pressed", String(window.__web));
+    });
+
+    document.querySelector("[data-testid=file-input]").addEventListener("change", (e) => {
+      window.__files = e.target.files.length;
+    });
+
+    document.getElementById("new-chat").addEventListener("click", () => {
+      messages.innerHTML = "";
+      window.__turns = 0;
+    });
+
+    function bubble(alignClass) {
+      const outer = document.createElement("div");
+      outer.className = alignClass;
+      const prose = document.createElement("div");
+      prose.className = "prose";
+      outer.appendChild(prose);
+      messages.appendChild(outer);
+      return prose;
+    }
+
+    function send() {
+      const text = composer.value.trim();
+      if (!text) return;
+      composer.value = "";
+      bubble("ml-auto").textContent = text;
+
+      window.__turns += 1;
+      const meta = `tab=${window.__tabId} model=${window.__model} ` +
+                   `web=${window.__web ? "on" : "off"} files=${window.__files}`;
+      const reply = `Turn ${window.__turns} [${meta}]: ${text}`;
+      window.__files = 0;  // attachments clear after send, like the real UI
+
+      // While generating, the send button becomes a stop button (title changes),
+      // so button[title="Send message"] no longer matches — the provider's
+      // completion signal.
+      const sendBtn = document.getElementById("send-btn");
+      sendBtn.setAttribute("title", "Stop");
+
+      const answer = bubble("mr-auto");
+      answer.setAttribute("data-generating", "true");
+      let i = 0;
+      const timer = setInterval(() => {
+        if (i < reply.length) {
+          answer.textContent += reply[i++];
+        } else {
+          clearInterval(timer);
+          answer.removeAttribute("data-generating");
+          sendBtn.setAttribute("title", "Send message");  // reply done -> send returns
+        }
+      }, 8);
+    }
+
+    document.getElementById("send-btn").addEventListener("click", send);
+    composer.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+    });
+  </script>
+</body>
+</html>
