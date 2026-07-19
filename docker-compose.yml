@@ -1,0 +1,44 @@
+# chat2api — server + one-time login helper, sharing one profile volume.
+#
+#   1. First-time login (server not yet running):
+#        docker compose --profile login up login
+#        # open http://<host>:6080/vnc.html, click Connect, log in,
+#        # then Ctrl-C to stop the login container.
+#   2. Run the API:
+#        docker compose up -d chat2api
+#
+# To log in again later, stop the server first (Chromium locks the profile):
+#   docker compose stop chat2api
+#   docker compose --profile login up login
+#   docker compose start chat2api
+
+services:
+  chat2api:
+    build: .
+    image: chat2api
+    command: ["server"]
+    env_file: .env
+    environment:
+      CHAT2API_HEADLESS: "true"
+    ports:
+      - "9000:9000"
+    volumes:
+      - browser_profile:/app/.browser_profile
+    restart: unless-stopped
+
+  login:
+    build: .
+    image: chat2api
+    profiles: ["login"]      # not started by a plain `docker compose up`
+    command: ["login"]
+    env_file: .env
+    environment:
+      CHAT2API_HEADLESS: "false"
+      # VNC_RESOLUTION: "1920x1080x24"
+    ports:
+      - "6080:6080"          # noVNC web client
+    volumes:
+      - browser_profile:/app/.browser_profile
+
+volumes:
+  browser_profile:

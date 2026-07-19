@@ -29,7 +29,9 @@ class Settings(BaseSettings):
 
     # ---- Provider selection ---------------------------------------------
     # Which registered provider backs this server (see src/providers/registry.py).
-    provider: str = "expressai"
+    # Defaults to the auth-free Google AI Mode backend so the container works
+    # out of the box with no login step.
+    provider: str = "googleaimode"
 
     # ---- MCP -------------------------------------------------------------
     # Path to a JSON file describing MCP servers: {"servers": [{"label":...}]}.

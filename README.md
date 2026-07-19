@@ -69,6 +69,60 @@ print(client.chat.completions.create(
 ).choices[0].message.content)
 ```
 
+## Docker
+
+The image runs the server headless, but Playwright needs a *logged-in* browser
+profile — which normally requires a visible window. On a headless server you
+can't run `headless=false`, and copying a profile from your laptop is
+unreliable: Chrome encrypts its cookie store with an OS-bound key, so a macOS
+profile's cookies won't decrypt inside the Linux container.
+
+The default provider is **Google AI Mode** (`CHAT2API_PROVIDER=googleaimode`),
+which needs no login — so `docker compose up chat2api` works out of the box. The
+login flow below is only needed for the auth-gated providers (`expressai`,
+`perplexity`).
+
+The image solves that with two modes sharing one profile volume. The `login`
+mode runs a headful Chromium behind [noVNC](https://novnc.com/), so you do the
+one-time manual login *inside* the container (right OS, right Chromium) from any
+web browser — no VNC client to install.
+
+Pushing to `main` builds and publishes the image to GHCR via GitHub Actions
+(`.github/workflows/docker.yml`). To run the published image instead of building
+locally, replace `build: .` with
+`image: ghcr.io/madhavtummala/chat2api:latest` in `docker-compose.yml`.
+
+```bash
+# 1. One-time login (do this before starting the server — Chromium locks the
+#    profile, so only one mode can use the volume at a time).
+docker compose --profile login up login
+#    → open http://<server-host>:6080/vnc.html, click Connect, log in,
+#      then Ctrl-C. The session is saved to the `browser_profile` volume.
+
+# 2. Run the API (persistent profile → refreshed cookies are saved back, so the
+#    session lasts as long as the site allows).
+docker compose up -d chat2api        # serves on :9000
+```
+
+To log in again later (e.g. the session finally expired), stop the server first
+so it releases the profile lock:
+
+```bash
+docker compose stop chat2api
+docker compose --profile login up login      # log in, Ctrl-C
+docker compose start chat2api
+```
+
+Set the provider and any API keys in `.env` (copied from `.env.example`) — the
+`login` container reads the same file, so it opens the right site. For a
+different login backend, change `CHAT2API_PROVIDER` and repeat step 1.
+
+**Alternative — `storage_state` JSON:** if you'd rather log in on your laptop,
+export a Playwright `storage_state` JSON (decrypted cookies + localStorage,
+which *is* portable across OSes) and point `CHAT2API_STORAGE_STATE` at a mounted
+copy. Simpler, but the context is ephemeral: cookie refreshes aren't saved back,
+so you'll re-export more often than the noVNC/persistent-profile route needs.
+
 ## Endpoints
 
 - `POST /v1/chat/completions` — streaming (SSE) and non-streaming.
