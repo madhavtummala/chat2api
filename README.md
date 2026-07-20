@@ -71,58 +71,64 @@ print(client.chat.completions.create(
 
 ## Docker
 
-The image runs the server headless, but Playwright needs a *logged-in* browser
-profile — which normally requires a visible window. On a headless server you
-can't run `headless=false`, and copying a profile from your laptop is
-unreliable: Chrome encrypts its cookie store with an OS-bound key, so a macOS
-profile's cookies won't decrypt inside the Linux container.
-
 The default provider is **Google AI Mode** (`CHAT2API_PROVIDER=googleaimode`),
-which needs no login — so `docker compose up chat2api` works out of the box. The
-login flow below is only needed for the auth-gated providers (`expressai`,
-`perplexity`).
+which needs no login — so it works out of the box:
 
-The image solves that with two modes sharing one profile volume. The `login`
-mode runs a headful Chromium behind [noVNC](https://novnc.com/), so you do the
-one-time manual login *inside* the container (right OS, right Chromium) from any
-web browser — no VNC client to install.
+```bash
+docker compose up -d chat2api        # API on :9000
+```
 
 Pushing to `main` builds and publishes the image to GHCR via GitHub Actions
 (`.github/workflows/docker.yml`). To run the published image instead of building
 locally, replace `build: .` with
 `image: ghcr.io/madhavtummala/chat2api:latest` in `docker-compose.yml`.
 
-```bash
-# 1. One-time login (do this before starting the server — Chromium locks the
-#    profile, so only one mode can use the volume at a time).
-docker compose --profile login up login
-#    → open http://<server-host>:6080/vnc.html, click Connect, log in,
-#      then Ctrl-C. The session is saved to the `browser_profile` volume.
+### Providers that need a login (or defeat a bot wall)
 
-# 2. Run the API (persistent profile → refreshed cookies are saved back, so the
-#    session lasts as long as the site allows).
-docker compose up -d chat2api        # serves on :9000
+`expressai` requires a login; `perplexity` sits behind a **Cloudflare** bot
+check that a *headless* browser never clears (the composer never appears →
+"chat UI did not become ready"). Both are solved the same way: run the server
+**headful** under a virtual display (Xvfb) and expose that live browser over
+[noVNC](https://novnc.com/) so you can log in / click through the wall directly.
+
+There's no separate login container — you log in on the *running server's* own
+browser, and the session persists to the profile volume. In `docker-compose.yml`
+set:
+
+```yaml
+    environment:
+      CHAT2API_HEADLESS: "false"   # headful under Xvfb (clears Cloudflare)
+      CHAT2API_VNC: "true"         # expose the live browser on :6080
+    ports:
+      - "9000:9000"
+      - "6080:6080"
 ```
 
-To log in again later (e.g. the session finally expired), stop the server first
-so it releases the profile lock:
+Then:
 
 ```bash
-docker compose stop chat2api
-docker compose --profile login up login      # log in, Ctrl-C
-docker compose start chat2api
+docker compose up -d chat2api
+curl http://<host>:9000/health                 # look for "authenticated": false
+# open http://<host>:6080/vnc.html → Connect → log in in the browser window
+# /health flips to "authenticated": true — no restart needed
 ```
 
-Set the provider and any API keys in `.env` (copied from `.env.example`) — the
-`login` container reads the same file, so it opens the right site. For a
-different login backend, change `CHAT2API_PROVIDER` and repeat step 1.
+Because it's a persistent profile, refreshed cookies are saved back, so the
+session lasts as long as the site allows. If it ever expires, just VNC in and
+log in again — no restart, no extra container. Tip: if the server is live and
+serving traffic, open a **new tab** (Ctrl+T) in the VNC browser to log in, so an
+incoming request doesn't navigate the tab you're typing in.
 
-**Cloudflare-gated providers (e.g. Perplexity):** some sites put a Cloudflare
-bot check in front of the app that a *headless* browser never clears (the chat
-composer never appears → "chat UI did not become ready"). Run those **headful
-under a virtual display** by setting `CHAT2API_HEADLESS=false` on the `chat2api`
-service — the entrypoint then starts Xvfb automatically (no VNC needed for
-serving). ExpressAI and Google AI Mode have no such wall and run headless.
+Copying a profile from your laptop instead is unreliable: Chrome encrypts its
+cookie store with an OS-bound key, so a macOS profile's cookies won't decrypt
+inside the Linux container — hence logging in *inside* the container.
+
+> **Security:** noVNC is served with no password. Reach `:6080` only over a
+> private network / SSH tunnel (e.g. Tailscale); never publish it to the
+> internet. Once logged in you can drop `CHAT2API_VNC`/the `6080` mapping.
+
+**Alternative — `storage_state` JSON:** if you'd rather log in on your laptop,
+export a Playwright `storage_state` JSON (decrypted cookies + localStorage,
 
 **Alternative — `storage_state` JSON:** if you'd rather log in on your laptop,
 export a Playwright `storage_state` JSON (decrypted cookies + localStorage,

@@ -1,16 +1,17 @@
-# chat2api — server + one-time login helper, sharing one profile volume.
+# chat2api — single service, one profile volume.
 #
-#   1. First-time login (server not yet running):
-#        docker compose --profile login up login
-#        # open http://<host>:6080/vnc.html, click Connect, log in,
-#        # then Ctrl-C to stop the login container.
-#   2. Run the API:
-#        docker compose up -d chat2api
+# Auth-free provider (default googleaimode) — just run it:
+#   docker compose up -d chat2api                 # API on :9000
 #
-# To log in again later, stop the server first (Chromium locks the profile):
-#   docker compose stop chat2api
-#   docker compose --profile login up login
-#   docker compose start chat2api
+# Provider that needs a login (expressai) or a Cloudflare-gated one (perplexity):
+# run headful with the live browser exposed, log in once via noVNC, done. The
+# session persists to the profile volume, so it survives restarts.
+#   1. set CHAT2API_HEADLESS=false and CHAT2API_VNC=true below (and publish 6080)
+#   2. docker compose up -d chat2api
+#   3. watch for `"authenticated": false` at http://<host>:9000/health
+#   4. open http://<host>:6080/vnc.html, click Connect, log in in the browser
+#      (open a new tab there if the server is live and serving requests)
+#   5. /health flips to `"authenticated": true` — you're done; no restart needed
 
 services:
   chat2api:
@@ -20,25 +21,15 @@ services:
     env_file: .env
     environment:
       CHAT2API_HEADLESS: "true"
+      # For login-gated / Cloudflare providers, run headful + expose the browser:
+      #   CHAT2API_HEADLESS: "false"   # headful under Xvfb
+      #   CHAT2API_VNC: "true"         # live browser on :6080 (log in / debug)
     ports:
       - "9000:9000"
+      # - "6080:6080"                  # noVNC — only with CHAT2API_VNC=true
     volumes:
       - browser_profile:/app/.browser_profile
     restart: unless-stopped
-
-  login:
-    build: .
-    image: chat2api
-    profiles: ["login"]      # not started by a plain `docker compose up`
-    command: ["login"]
-    env_file: .env
-    environment:
-      CHAT2API_HEADLESS: "false"
-      # VNC_RESOLUTION: "1920x1080x24"
-    ports:
-      - "6080:6080"          # noVNC web client
-    volumes:
-      - browser_profile:/app/.browser_profile
 
 volumes:
   browser_profile:

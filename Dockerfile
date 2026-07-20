@@ -25,7 +25,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 # Persist the authenticated browser profile across container restarts.
 VOLUME ["/app/.browser_profile"]
 
-# 9000 = API server, 6080 = noVNC (login mode only).
+# 9000 = API server, 6080 = noVNC live browser (when CHAT2API_VNC=true).
 EXPOSE 9000 6080
 
 ENTRYPOINT ["tini", "--", "/usr/local/bin/entrypoint.sh"]
