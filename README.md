@@ -117,6 +117,13 @@ Set the provider and any API keys in `.env` (copied from `.env.example`) — the
 `login` container reads the same file, so it opens the right site. For a
 different login backend, change `CHAT2API_PROVIDER` and repeat step 1.
 
+**Cloudflare-gated providers (e.g. Perplexity):** some sites put a Cloudflare
+bot check in front of the app that a *headless* browser never clears (the chat
+composer never appears → "chat UI did not become ready"). Run those **headful
+under a virtual display** by setting `CHAT2API_HEADLESS=false` on the `chat2api`
+service — the entrypoint then starts Xvfb automatically (no VNC needed for
+serving). ExpressAI and Google AI Mode have no such wall and run headless.
+
 **Alternative — `storage_state` JSON:** if you'd rather log in on your laptop,
 export a Playwright `storage_state` JSON (decrypted cookies + localStorage,
 which *is* portable across OSes) and point `CHAT2API_STORAGE_STATE` at a mounted
