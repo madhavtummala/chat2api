@@ -13,7 +13,7 @@ from src.core.types import ChatRequest
 from src.mcp_bridge import McpManager, McpServerSpec
 from src.providers.base import BaseChatProvider
 
-from .conftest import FakeProvider
+from .conftest import FakeProvider, FakeRouter
 
 SERVER = Path(__file__).parent / "assets" / "mock_mcp_server.py"
 
@@ -40,7 +40,7 @@ def make_app(provider, mcp=None) -> FastAPI:
     app = FastAPI()
     app.include_router(main_router)
     app.include_router(responses_router)
-    app.state.provider = provider
+    app.state.router = FakeRouter(provider)
     app.state.sessions = SessionStore()
     if mcp is not None:
         app.state.mcp = mcp

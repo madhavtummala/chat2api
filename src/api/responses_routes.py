@@ -23,11 +23,11 @@ from ..core.errors import ProviderError
 from ..core.messages import flatten_messages
 from ..core.tools import build_tools_preamble
 from ..core.types import ChatMessage, ChatRequest
-from ..providers import BaseChatProvider
+from ..providers import ProviderRouter
 from . import openai_format as fmt
 from . import responses_schemas as rs
 from .auth import require_api_key
-from .routes import get_mcp, get_provider, validate_model
+from .routes import get_mcp, get_router, resolve_provider, validate_model
 from .tool_runtime import collect
 
 logger = logging.getLogger(__name__)
@@ -41,14 +41,14 @@ def get_sessions(request: Request):
 @router.post("/v1/responses", dependencies=[Depends(require_api_key)])
 async def create_response(
     body: rs.ResponsesRequest,
-    provider: BaseChatProvider = Depends(get_provider),
+    provider_router: ProviderRouter = Depends(get_router),
     mcp=Depends(get_mcp),
     sessions=Depends(get_sessions),
 ):
-    if body.model:
-        validate_model(provider, body.model)
-    else:
-        body.model = provider.default_model
+    provider, model = resolve_provider(provider_router, body.model or "")
+    body.model = model or provider.default_model
+    if model:
+        validate_model(provider, model)
     # Rebuild the conversation: prior history (if continuing) + this turn's input.
     history: list[ChatMessage] = []
     if body.previous_response_id:

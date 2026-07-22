@@ -35,6 +35,8 @@ from src.core.errors import AuthenticationRequired
 from src.core.types import ChatMessage, ChatRequest
 from src.providers.expressai import ExpressAIProvider
 
+from .conftest import FakeRouter
+
 MOCK_PAGE = Path(__file__).parent / "assets" / "mock_chat.html"
 MOCK_URL = MOCK_PAGE.resolve().as_uri()
 LOGIN_URL = (Path(__file__).parent / "assets" / "mock_login.html").resolve().as_uri()
@@ -78,7 +80,7 @@ async def stack(tmp_path, request):
 def _make_client(provider) -> AsyncClient:
     app = FastAPI()
     app.include_router(router)
-    app.state.provider = provider
+    app.state.router = FakeRouter(provider)
     transport = ASGITransport(app=app)
     return AsyncClient(transport=transport, base_url="http://test")
 
@@ -181,21 +183,26 @@ async def test_conversation_resets_but_tab_is_reused(stack):
 async def test_pool_is_bounded_no_runaway_tabs(stack):
     """Serving many requests never opens more tabs than max_concurrency."""
     browser, provider, settings = stack
-    pages_before = len(browser.context.pages)
-    assert len(browser._pages) == settings.max_concurrency
+    # Pools are warmed lazily per provider on first use, so nothing exists yet.
+    assert provider.name not in browser._pool_pages
 
     async with _make_client(provider) as client:
         tabs = set()
+        steady_pages = None
         for i in range(6):
             r = _parse(await _content(client, f"msg {i}"))
             assert (r.turn, r.text) == (1, f"msg {i}")
             tabs.add(r.tab)
+            if steady_pages is None:
+                # First request warmed the pool; capture the steady-state count.
+                steady_pages = len(browser.context.pages)
+            else:
+                # No tab leak: subsequent requests reuse, never open new tabs.
+                assert len(browser.context.pages) == steady_pages
 
     # At most `max_concurrency` distinct tabs ever served requests.
     assert len(tabs) <= settings.max_concurrency
-    # No tab leak: page count is unchanged after all requests.
-    assert len(browser.context.pages) == pages_before
-    assert len(browser._pages) == settings.max_concurrency
+    assert len(browser._pool_pages[provider.name]) == settings.max_concurrency
 
 
 async def test_model_switch_via_request(stack):
@@ -249,7 +256,7 @@ async def test_tab_recycled_on_failure(stack):
         assert lease.page is not bad_page
         assert not lease.page.is_closed()
     assert bad_page.is_closed()
-    assert len(browser._pages) == settings.max_concurrency
+    assert len(browser._pool_pages["default"]) == settings.max_concurrency
 
 
 async def test_markdown_reflow_does_not_duplicate_tool_calls(tmp_path):
@@ -263,7 +270,7 @@ async def test_markdown_reflow_does_not_duplicate_tool_calls(tmp_path):
     provider = ExpressAIProvider(settings, browser)
     app = FastAPI()
     app.include_router(router)
-    app.state.provider = provider
+    app.state.router = FakeRouter(provider)
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
             resp = await client.post("/v1/chat/completions", json={
@@ -318,4 +325,4 @@ async def test_pool_survives_request_cancellation(stack):
     # The pool is replenished, so a fresh request acquires without hanging.
     async with browser.acquire() as lease:
         assert not lease.page.is_closed()
-    assert len(browser._pages) == settings.max_concurrency
+    assert len(browser._pool_pages["default"]) == settings.max_concurrency

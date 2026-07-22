@@ -17,7 +17,7 @@ from ..core.tools import (
     build_tools_preamble,
 )
 from ..core.types import ChatMessage, ChatRequest
-from ..providers import BaseChatProvider
+from ..providers import BaseChatProvider, ProviderRouter
 from . import openai_format as fmt
 from .auth import require_api_key
 from .schemas import ChatCompletionRequest, ModelCard, ModelList
@@ -27,8 +27,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def get_provider(request: Request) -> BaseChatProvider:
-    return request.app.state.provider
+def get_router(request: Request) -> ProviderRouter:
+    return request.app.state.router
+
+
+def resolve_provider(
+    provider_router: ProviderRouter, model: str
+) -> tuple[BaseChatProvider, str]:
+    """Map a (possibly ``provider/``-prefixed) model to (provider, bare_model)."""
+    name, bare_model = provider_router.split(model)
+    try:
+        return provider_router.get(name), bare_model
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown provider {name!r}.") from None
 
 
 def get_mcp(request: Request):
@@ -38,27 +49,38 @@ def get_mcp(request: Request):
 
 @router.get("/health")
 async def health(
-    deep: bool = False, provider: BaseChatProvider = Depends(get_provider)
+    deep: bool = False, provider_router: ProviderRouter = Depends(get_router)
 ) -> dict:
-    """Liveness + upstream login state.
+    """Liveness + per-provider login state.
 
-    `authenticated` is the cached login state (updated on every request); pass
-    `?deep=1` to actively re-probe the provider (navigates a tab).
+    Each provider's `authenticated` is its cached login state (updated on every
+    request); pass `?deep=1` to actively re-probe every provider (navigates a
+    tab per provider, warming any that are still cold).
     """
-    authenticated = (
-        await provider.check_authentication() if deep else provider.authenticated
-    )
+    providers: dict[str, bool | None] = {}
+    for provider in provider_router.all_providers():
+        providers[provider.name] = (
+            await provider.check_authentication() if deep else provider.authenticated
+        )
+    default = provider_router.default_name
     return {
         "status": "ok",
-        "provider": provider.name,
-        "authenticated": authenticated,
+        "provider": default,
+        "authenticated": providers.get(default),
+        "providers": providers,
     }
 
 
 @router.get("/v1/models", dependencies=[Depends(require_api_key)])
-async def list_models(provider: BaseChatProvider = Depends(get_provider)) -> ModelList:
+async def list_models(provider_router: ProviderRouter = Depends(get_router)) -> ModelList:
+    # Advertise every routable model as `provider/model` so clients can pick a
+    # backend explicitly. Bare (unprefixed) models still work against the default.
     return ModelList(
-        data=[ModelCard(id=model, owned_by=provider.name) for model in provider.models]
+        data=[
+            ModelCard(id=f"{provider.name}/{model}", owned_by=provider.name)
+            for provider in provider_router.all_providers()
+            for model in provider.models
+        ]
     )
 
 
@@ -81,13 +103,14 @@ def validate_model(provider: BaseChatProvider, model: str) -> None:
 @router.post("/v1/chat/completions", dependencies=[Depends(require_api_key)])
 async def chat_completions(
     body: ChatCompletionRequest,
-    provider: BaseChatProvider = Depends(get_provider),
+    provider_router: ProviderRouter = Depends(get_router),
     mcp=Depends(get_mcp),
 ):
-    # Resolve the model (strip a `:online` suffix). An explicitly-requested
-    # model must be one the provider offers — we never try to switch to an
-    # unknown one. An omitted model falls back to the provider's default.
-    model = body.resolve_model()
+    # Resolve the model (strip a `:online` suffix), then route on any
+    # `provider/` prefix. An explicitly-requested model must be one the resolved
+    # provider offers — we never switch to an unknown one. An omitted model
+    # falls back to that provider's default.
+    provider, model = resolve_provider(provider_router, body.resolve_model())
     if model:
         validate_model(provider, model)
     else:

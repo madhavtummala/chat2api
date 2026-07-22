@@ -87,7 +87,7 @@ class BrowserChatProvider(BaseChatProvider):
     # -- lifecycle ---------------------------------------------------------
     async def startup(self) -> None:
         # Warm one tab so login state is verified before the first request.
-        async with self.browser.acquire() as lease:
+        async with self.browser.acquire(self.name) as lease:
             await self._ensure_ready(lease.page)
 
     async def _ensure_ready(self, page: Page) -> None:
@@ -152,7 +152,7 @@ class BrowserChatProvider(BaseChatProvider):
 
     async def check_authentication(self) -> bool | None:
         try:
-            async with self.browser.acquire() as lease:
+            async with self.browser.acquire(self.name) as lease:
                 await self._ensure_ready(lease.page)
             return self._authenticated
         except AuthenticationRequired:
@@ -174,7 +174,7 @@ class BrowserChatProvider(BaseChatProvider):
     # -- generation --------------------------------------------------------
     async def generate(self, request: ChatRequest) -> AsyncIterator[str]:
         prompt = flatten_messages(request.messages)
-        async with self.browser.acquire() as lease:
+        async with self.browser.acquire(self.name) as lease:
             page = lease.page
             try:
                 await self._ensure_ready(page)

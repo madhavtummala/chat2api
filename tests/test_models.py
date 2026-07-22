@@ -34,7 +34,7 @@ async def test_models_endpoint_reflects_live_catalogue():
     await provider.refresh_models()
     client = TestClient(make_app(provider))
     data = client.get("/v1/models").json()
-    assert [m["id"] for m in data["data"]] == ["m-a", "m-b"]
+    assert [m["id"] for m in data["data"]] == ["dyn/m-a", "dyn/m-b"]
     assert all(m["owned_by"] == "dyn" for m in data["data"])
 
 

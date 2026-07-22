@@ -28,10 +28,16 @@ class Settings(BaseSettings):
     api_keys: str = ""
 
     # ---- Provider selection ---------------------------------------------
-    # Which registered provider backs this server (see src/providers/registry.py).
-    # Defaults to the auth-free Google AI Mode backend so the container works
-    # out of the box with no login step.
+    # The *default* provider: used for requests whose model has no `provider/`
+    # prefix (e.g. `GPT OSS 120B`), and warmed at startup. Defaults to the
+    # auth-free Google AI Mode backend so the container works out of the box.
     provider: str = "googleaimode"
+
+    # Comma-separated allowlist of providers this server may route to via the
+    # `provider/model` model syntax (e.g. `perplexity/Gemini 3.1 Pro`). Empty
+    # means "all registered providers". The default provider is always allowed.
+    # Providers are instantiated lazily and their tabs warmed on first use.
+    providers: str = ""
 
     # ---- MCP -------------------------------------------------------------
     # Path to a JSON file describing MCP servers: {"servers": [{"label":...}]}.
@@ -73,6 +79,11 @@ class Settings(BaseSettings):
     @property
     def api_key_set(self) -> set[str]:
         return {k.strip() for k in self.api_keys.split(",") if k.strip()}
+
+    @property
+    def enabled_provider_set(self) -> set[str]:
+        """Explicit provider allowlist from ``providers`` (empty = no filter)."""
+        return {p.strip() for p in self.providers.split(",") if p.strip()}
 
 
 settings = Settings()

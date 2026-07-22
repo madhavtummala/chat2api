@@ -74,7 +74,7 @@ class GoogleAIModeProvider(BaseChatProvider):
     async def generate(self, request: ChatRequest) -> AsyncIterator[str]:
         prompt = flatten_messages(request.messages)
         url = SEARCH_URL + quote_plus(prompt)
-        async with self.browser.acquire() as lease:
+        async with self.browser.acquire(self.name) as lease:
             page = lease.page
             try:
                 await page.goto(url, wait_until="domcontentloaded")

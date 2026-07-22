@@ -16,7 +16,7 @@ def test_health(client):
 def test_list_models(client):
     data = client.get("/v1/models").json()
     assert data["object"] == "list"
-    assert {m["id"] for m in data["data"]} == {"fake-1", "fake-2"}
+    assert {m["id"] for m in data["data"]} == {"fake/fake-1", "fake/fake-2"}
     assert all(m["owned_by"] == "fake" for m in data["data"])
 
 

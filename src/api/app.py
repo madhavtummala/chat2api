@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from ..browser import BrowserManager
 from ..config import Settings, settings
 from ..mcp_bridge import McpManager, load_specs
-from ..providers import available_providers, create_provider
+from ..providers import ProviderRouter, available_providers
 from .responses_routes import router as responses_router
 from .routes import router
 from .sessions import SessionStore
@@ -23,22 +23,26 @@ def create_app(config: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        browser = BrowserManager(config)
+        provider_router = ProviderRouter(config, browser)
         logger.info(
-            "Booting chat2api with provider=%s (available: %s)",
-            config.provider,
+            "Booting chat2api: default provider=%s, routable=%s (registered: %s)",
+            provider_router.default_name,
+            provider_router.enabled,
             available_providers(),
         )
-        browser = BrowserManager(config)
-        provider = create_provider(config.provider, config, browser)
         mcp = McpManager(load_specs(config.mcp_config_path))
         app.state.browser = browser
-        app.state.provider = provider
+        app.state.router = provider_router
         app.state.mcp = mcp
         app.state.sessions = SessionStore()
         try:
             await browser.start()
-            await provider.startup()
-            await provider.refresh_models()
+            # Warm only the default provider so /health has a login state at
+            # boot; other providers warm lazily on first request.
+            default = provider_router.get(provider_router.default_name)
+            await default.startup()
+            await default.refresh_models()
             await mcp.startup()
         except Exception:
             logger.exception("Startup failed; server will report unhealthy")
@@ -49,7 +53,8 @@ def create_app(config: Settings | None = None) -> FastAPI:
                 await mcp.shutdown()
             finally:
                 try:
-                    await provider.shutdown()
+                    for provider in app.state.router.all_providers():
+                        await provider.shutdown()
                 finally:
                     await browser.stop()
 
