@@ -1,35 +1,37 @@
 # chat2api — single service, one profile volume.
 #
-# Auth-free provider (default googleaimode) — just run it:
-#   docker compose up -d chat2api                 # API on :9000
+# Defaults: the auth-free provider (googleaimode), run headful under Xvfb with the
+# live browser exposed over noVNC (:6080) so you can watch/debug — and log in
+# immediately if you switch to a login-gated provider (expressai/perplexity). Any
+# login session persists to the profile volume, surviving restarts.
 #
-# Provider that needs a login (expressai) or a Cloudflare-gated one (perplexity):
-# run headful with the live browser exposed, log in once via noVNC, done. The
-# session persists to the profile volume, so it survives restarts.
-#   1. set CHAT2API_HEADLESS=false and CHAT2API_VNC=true below (and publish 6080)
-#   2. docker compose up -d chat2api
-#   3. watch for `"authenticated": false` at http://<host>:9000/health
-#   4. open http://<host>:6080/vnc.html, click Connect, log in in the browser
+# Log in to a gated provider (after setting CHAT2API_PROVIDER below):
+#   1. docker compose up -d chat2api
+#   2. watch for `"authenticated": false` at http://<host>:9000/health
+#   3. open http://<host>:6080/vnc.html, click Connect, log in in the browser
 #      (open a new tab there if the server is live and serving requests)
-#   5. /health flips to `"authenticated": true` — you're done; no restart needed
+#   4. /health flips to `"authenticated": true` — done; no restart needed
+#
+# Leaner auth-free setup: set CHAT2API_HEADLESS=true and drop CHAT2API_VNC and the
+# 6080 port (googleaimode needs no display).
+#
+# Security: noVNC has no password — reach :6080 only over a private network / SSH
+# tunnel, never publish it to the internet.
 
 services:
   chat2api:
-    build: .
-    image: chat2api
-    command: ["server"]
-    env_file: .env
+    image: ghcr.io/madhavtummala/chat2api:latest
+    container_name: chat2api
+    restart: unless-stopped
     environment:
-      CHAT2API_HEADLESS: "true"
-      # For login-gated / Cloudflare providers, run headful + expose the browser:
-      #   CHAT2API_HEADLESS: "false"   # headful under Xvfb
-      #   CHAT2API_VNC: "true"         # live browser on :6080 (log in / debug)
+      CHAT2API_PROVIDER: googleaimode
+      CHAT2API_HEADLESS: "false"     # headful under Xvfb (required for noVNC)
+      CHAT2API_VNC: "true"           # live browser on :6080 for login/debug
     ports:
       - "9000:9000"
-      # - "6080:6080"                  # noVNC — only with CHAT2API_VNC=true
+      - "6080:6080"
     volumes:
       - browser_profile:/app/.browser_profile
-    restart: unless-stopped
 
 volumes:
   browser_profile:
