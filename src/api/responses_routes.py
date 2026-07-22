@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -100,6 +101,18 @@ async def create_response(
     return JSONResponse(response)
 
 
+@asynccontextmanager
+async def _maybe_session(provider: BaseChatProvider):
+    """Yield a persistent-thread session if the provider is a chat box that
+    holds context between messages, else ``None`` (the caller then falls back to
+    stateless full-transcript replay via ``provider.generate``)."""
+    if provider.supports_thread_continuation:
+        async with provider.open_session() as session:
+            yield session
+    else:
+        yield None
+
+
 async def _run_loop(
     provider: BaseChatProvider,
     mcp,
@@ -107,51 +120,71 @@ async def _run_loop(
     tool_defs: list[dict],
     body: rs.ResponsesRequest,
 ) -> tuple[list[dict], str, str]:
-    """Drive model<->tool turns until a final answer (or a client-side tool)."""
+    """Drive model<->tool turns until a final answer (or a client-side tool).
+
+    On a chat-box provider we hold one tab for the whole loop: the first turn
+    sends the system prompt + history to open the thread, and each later turn
+    sends only the messages appended since (the tool results) — the thread's own
+    context supplies the rest. Stateless providers re-send the whole transcript
+    every turn instead.
+    """
     use_tools = bool(tool_defs) and body.tool_choice != "none"
     required = body.tool_choice == "required" or isinstance(body.tool_choice, dict)
     output_items: list[dict] = []
     final_text = ""
 
-    for _ in range(settings.max_agent_turns):
-        messages = list(history)
-        if use_tools:
-            messages.insert(
-                0, ChatMessage(role="system", content=build_tools_preamble(tool_defs, required))
+    async with _maybe_session(provider) as session:
+        sent_upto = 0  # how much of `history` a continued thread already has
+        for _ in range(settings.max_agent_turns):
+            if session is None or sent_upto == 0:
+                # Stateless, or the first turn of a fresh thread: the model needs
+                # the whole context, so send the system prompt + full history.
+                messages = list(history)
+                if use_tools:
+                    messages.insert(
+                        0,
+                        ChatMessage(role="system", content=build_tools_preamble(tool_defs, required)),
+                    )
+            else:
+                # Continuation: only the messages appended since the last send,
+                # minus the assistant's own turn (it authored that in-thread).
+                messages = [m for m in history[sent_upto:] if m.role != "assistant"]
+            sent_upto = len(history)
+
+            request = ChatRequest(
+                messages=messages,
+                model=body.model,
+                reasoning_effort=body.resolve_reasoning_effort(),
             )
-        request = ChatRequest(
-            messages=messages,
-            model=body.model,
-            reasoning_effort=body.resolve_reasoning_effort(),
-        )
-        text, tool_calls = await collect(provider, request, use_tools)
-        if text:
-            final_text = text
-
-        if not tool_calls:
+            stream = provider.generate(request) if session is None else session.send(request)
+            text, tool_calls = await collect(stream, use_tools)
             if text:
-                history.append(ChatMessage(role="assistant", content=text))
-            output_items.append(rs.message_item(text))
-            return output_items, final_text, "completed"
+                final_text = text
 
-        # Record the assistant's tool-call turn in the history.
-        history.append(ChatMessage(role="assistant", content=_render_calls(text, tool_calls)))
+            if not tool_calls:
+                if text:
+                    history.append(ChatMessage(role="assistant", content=text))
+                output_items.append(rs.message_item(text))
+                return output_items, final_text, "completed"
 
-        # Execute all MCP-owned calls concurrently (parallel tool calls run in
-        # parallel); a tool we can't run halts the loop for the client.
-        owned = [c for c in tool_calls if mcp and mcp.owns(c["function"]["name"])]
-        unowned = [c for c in tool_calls if not (mcp and mcp.owns(c["function"]["name"]))]
+            # Record the assistant's tool-call turn in the history.
+            history.append(ChatMessage(role="assistant", content=_render_calls(text, tool_calls)))
 
-        results = await asyncio.gather(*(_exec_mcp(mcp, c) for c in owned))
-        for call, result in zip(owned, results):
-            name = call["function"]["name"]
-            output_items.append(rs.mcp_call_item(name, call["function"]["arguments"], result))
-            history.append(ChatMessage(role="tool", content=result, name=name))
+            # Execute all MCP-owned calls concurrently (parallel tool calls run
+            # in parallel); a tool we can't run halts the loop for the client.
+            owned = [c for c in tool_calls if mcp and mcp.owns(c["function"]["name"])]
+            unowned = [c for c in tool_calls if not (mcp and mcp.owns(c["function"]["name"]))]
 
-        if unowned:
-            for call in unowned:
-                output_items.append(rs.function_call_item(call))
-            return output_items, final_text, "requires_action"
+            results = await asyncio.gather(*(_exec_mcp(mcp, c) for c in owned))
+            for call, result in zip(owned, results):
+                name = call["function"]["name"]
+                output_items.append(rs.mcp_call_item(name, call["function"]["arguments"], result))
+                history.append(ChatMessage(role="tool", content=result, name=name))
+
+            if unowned:
+                for call in unowned:
+                    output_items.append(rs.function_call_item(call))
+                return output_items, final_text, "requires_action"
 
     logger.warning("Responses agentic loop hit max_agent_turns")
     output_items.append(rs.message_item(final_text))

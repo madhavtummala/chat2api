@@ -158,7 +158,7 @@ async def chat_completions(
         )
 
     try:
-        content, tool_calls = await collect(provider, chat_request, use_tools)
+        content, tool_calls = await collect(provider.generate(chat_request), use_tools)
     except ProviderError as exc:
         return _provider_error(exc)
 

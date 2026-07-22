@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import AsyncIterator
 
@@ -65,6 +66,9 @@ class Selectors:
 
 
 class BrowserChatProvider(BaseChatProvider):
+    #: Real chat boxes hold context across messages, so a persistent-thread
+    #: agentic loop can send the system prompt once + deltas (see open_session).
+    supports_thread_continuation: bool = True
     #: Root URL of the chat app (subclasses usually set this from settings).
     base_url: str = ""
     #: Site selectors (subclass overrides).
@@ -173,27 +177,26 @@ class BrowserChatProvider(BaseChatProvider):
 
     # -- generation --------------------------------------------------------
     async def generate(self, request: ChatRequest) -> AsyncIterator[str]:
-        prompt = flatten_messages(request.messages)
+        # A single stateless turn is just a one-message session: a fresh thread
+        # with the full transcript in `request`. Delegate so the setup/submit/
+        # read logic lives in exactly one place (see BrowserChatSession).
+        async with self.open_session() as session:
+            async for delta in session.send(request):
+                yield delta
+
+    @asynccontextmanager
+    async def open_session(self) -> AsyncIterator["BrowserChatSession"]:
+        """Borrow one tab for a whole conversation.
+
+        The first :meth:`BrowserChatSession.send` opens a fresh thread and does
+        all the per-conversation setup (model, thinking, web-search); subsequent
+        sends reuse that same thread and submit only the new message, letting the
+        chat box's own context carry the history. Used by the Responses agentic
+        loop to send the system prompt once and then deltas; ``generate`` uses it
+        for a single stateless turn.
+        """
         async with self.browser.acquire(self.name) as lease:
-            page = lease.page
-            try:
-                await self._ensure_ready(page)
-                # Stateless: the full transcript is in `prompt`, so each request
-                # runs in a fresh thread (no double-counting of history).
-                await self._new_conversation(page)
-                await self.select_model(page, request.model)
-                await self._set_thinking(page, request)
-                await self._set_web_search(page, request.web_search)
-                await self._upload_attachments(page, request.attachments)
-                await self._close_modals(page)  # nothing may block the composer
-                await self._submit_prompt(page, prompt)
-                text = await self._await_response(page)
-                if text:
-                    yield text
-            except PlaywrightTimeout as exc:
-                raise ProviderTimeout(f"Timed out waiting for {self.name}.") from exc
-            except PlaywrightError as exc:
-                raise ProviderError(f"Browser automation failed: {exc}") from exc
+            yield BrowserChatSession(self, lease.page)
 
     async def select_model(self, page: Page, model: str) -> None:
         """Switch models only when needed: skip if unknown, unsupported, or
@@ -295,12 +298,18 @@ class BrowserChatProvider(BaseChatProvider):
             pass
         return False
 
-    async def _await_response(self, page: Page) -> str:
+    async def _await_response(self, page: Page, previous_count: int = 0) -> str:
         """Wait for the whole reply to finish, then return its final text.
 
         We buffer rather than stream token-by-token: rendered markdown reflows as
         it generates, so incremental reads duplicate/corrupt content (e.g.
         tool-call blocks). Completion = not generating AND the text has settled.
+
+        ``previous_count`` is how many answer bubbles existed *before* this turn
+        was submitted. In a continued thread the prior turns' answers are still
+        on the page, so we ignore everything until a *new* bubble appears —
+        otherwise we'd immediately return the previous turn's (already-settled)
+        reply. For a fresh thread this is 0 and has no effect.
         """
         deadline = time.monotonic() + self.settings.response_timeout_s
         poll = max(self.settings.poll_interval_s, 0.15)
@@ -309,6 +318,9 @@ class BrowserChatProvider(BaseChatProvider):
         last = ""
         stable_ticks = 0
         while time.monotonic() < deadline:
+            if await bubbles.count() <= previous_count:
+                await asyncio.sleep(poll)  # our answer hasn't appeared yet
+                continue
             generating = await self._is_generating(page)
             current = await self._reply_text(bubbles)
             if not generating and current and current == last:
@@ -333,3 +345,45 @@ class BrowserChatProvider(BaseChatProvider):
         if not await bubbles.count():
             return ""
         return html_to_markdown(await bubbles.last.inner_html())
+
+
+class BrowserChatSession:
+    """A conversation bound to one tab (see ``BrowserChatProvider.open_session``).
+
+    The first :meth:`send` opens a fresh thread and does the per-conversation
+    setup; later sends reuse that thread and submit only the message they're
+    given, so the chat box's own context supplies the history. All the browser
+    work is the provider's — this just tracks whether the thread is open and
+    turns Playwright failures into provider errors, exactly like the old
+    single-shot ``generate`` did.
+    """
+
+    def __init__(self, provider: BrowserChatProvider, page: Page):
+        self._p = provider
+        self._page = page
+        self._started = False
+
+    async def send(self, request: ChatRequest) -> AsyncIterator[str]:
+        p, page = self._p, self._page
+        prompt = flatten_messages(request.messages)
+        try:
+            if not self._started:
+                await p._ensure_ready(page)
+                await p._new_conversation(page)  # fresh thread for this session
+                await p.select_model(page, request.model)
+                await p._set_thinking(page, request)
+                await p._set_web_search(page, request.web_search)
+                self._started = True
+            # Attachments belong to whatever turn carries them; upload each time.
+            await p._upload_attachments(page, request.attachments)
+            await p._close_modals(page)  # nothing may block the composer
+            bubbles = page.locator(p.selectors.assistant_message)
+            previous = await bubbles.count()  # ignore prior turns' answers
+            await p._submit_prompt(page, prompt)
+            text = await p._await_response(page, previous)
+            if text:
+                yield text
+        except PlaywrightTimeout as exc:
+            raise ProviderTimeout(f"Timed out waiting for {p.name}.") from exc
+        except PlaywrightError as exc:
+            raise ProviderError(f"Browser automation failed: {exc}") from exc

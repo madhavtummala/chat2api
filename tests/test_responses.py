@@ -1,5 +1,6 @@
 import json
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,44 @@ class ToolThenAnswerProvider(BaseChatProvider):
             yield f"The tool said: {tool_result}"
         else:
             yield '<tool_call>{"name": "mock__echo", "arguments": {"text": "ping"}}</tool_call>'
+
+
+class SessionProvider(BaseChatProvider):
+    """A chat-box provider that continues one thread (supports_thread_continuation).
+
+    Records the messages handed to each ``send`` so a test can assert the loop
+    sends the full context on turn 0 and only the delta afterwards.
+    """
+
+    name = "sessionfake"
+    supports_tools = True
+    supports_thread_continuation = True
+    available_models = ("sessionfake",)
+
+    def __init__(self):
+        self.sends: list[list[tuple[str, str]]] = []
+
+    @asynccontextmanager
+    async def open_session(self):
+        yield _FakeSession(self)
+
+    async def generate(self, request):  # unused on the continuation path
+        yield ""
+
+
+class _FakeSession:
+    def __init__(self, provider: SessionProvider):
+        self._p = provider
+        self._turn = 0
+
+    async def send(self, request):
+        self._p.sends.append([(m.role, m.content) for m in request.messages])
+        turn, self._turn = self._turn, self._turn + 1
+        if turn == 0:
+            yield '<tool_call>{"name": "mock__echo", "arguments": {"text": "ping"}}</tool_call>'
+        else:
+            tool = next((c for r, c in self._p.sends[-1] if r == "tool"), None)
+            yield f"The tool said: {tool}"
 
 
 def make_app(provider, mcp=None) -> FastAPI:
@@ -112,6 +151,29 @@ async def test_agentic_loop_executes_mcp_tool(mcp):
     assert mcp_call["name"] == "mock__echo"
     assert mcp_call["output"] == "echo: ping"
     assert body["output_text"] == "The tool said: echo: ping"
+
+
+async def test_continuation_sends_system_prompt_once_then_deltas(mcp):
+    """A chat-box provider holds one thread: turn 0 gets the system prompt +
+    history, turn 1 gets only the appended tool result (not the whole transcript
+    nor the model's own tool-call turn)."""
+    provider = SessionProvider()
+    async with client_for(make_app(provider, mcp=mcp)) as client:
+        body = (
+            await client.post(
+                "/v1/responses", json={"model": "sessionfake", "input": "use the tool"}
+            )
+        ).json()
+
+    assert body["status"] == "completed"
+    assert body["output_text"] == "The tool said: echo: ping"
+    # Two turns were sent into the one thread.
+    assert len(provider.sends) == 2
+    # Turn 0: full context — the tools preamble (system) + the user input.
+    roles_0 = [r for r, _ in provider.sends[0]]
+    assert "system" in roles_0 and "user" in roles_0
+    # Turn 1: only the delta — the tool result, nothing re-sent.
+    assert provider.sends[1] == [("tool", "echo: ping")]
 
 
 async def test_unknown_tool_requires_action():

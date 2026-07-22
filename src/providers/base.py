@@ -40,6 +40,13 @@ class BaseChatProvider(ABC):
     supports_web_search: bool = False
     #: Whether the UI accepts file attachments.
     supports_attachments: bool = False
+    #: Whether a conversation can continue in one persistent thread — i.e. the
+    #: backend holds context between messages, so an agentic loop can send the
+    #: system prompt once and then only the new (delta) messages, instead of
+    #: re-flattening the whole transcript each turn. True for real chat boxes
+    #: (see :class:`BrowserChatProvider`); False for stateless backends like
+    #: Google AI Mode, which reconstruct context from a full replay every time.
+    supports_thread_continuation: bool = False
 
     def __init__(self, settings: Settings, browser: BrowserManager):
         self.settings = settings
