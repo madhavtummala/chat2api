@@ -29,6 +29,7 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 
 from ..core.errors import AuthenticationRequired, ProviderError, ProviderTimeout
+from ..core.markdown import html_to_markdown
 from ..core.messages import flatten_messages
 from ..core.types import ChatRequest
 from .base import BaseChatProvider
@@ -322,8 +323,13 @@ class BrowserChatProvider(BaseChatProvider):
         raise ProviderTimeout(f"{self.name} response did not complete in time.")
 
     async def _reply_text(self, bubbles) -> str:
-        """Read the newest reply's visible text. Override to strip site-specific
-        UI chrome (e.g. inline citation chips) so output matches other providers."""
+        """Read the newest reply as Markdown.
+
+        We read the answer's ``innerHTML`` and reconstruct Markdown (see
+        :func:`html_to_markdown`) rather than ``inner_text`` — the latter drops
+        lists, headings, emphasis and inline reference URLs, so the client would
+        get flattened prose instead of the formatting the site actually renders.
+        Override to strip site-specific UI chrome before conversion."""
         if not await bubbles.count():
             return ""
-        return (await bubbles.last.inner_text()).strip()
+        return html_to_markdown(await bubbles.last.inner_html())

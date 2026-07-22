@@ -25,6 +25,7 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 
 from ..core.errors import ProviderError, ProviderTimeout
+from ..core.markdown import html_to_markdown
 from ..core.messages import flatten_messages
 from ..core.types import ChatRequest
 from .base import BaseChatProvider
@@ -108,10 +109,21 @@ class GoogleAIModeProvider(BaseChatProvider):
         return page.locator("body").first
 
     async def _stream_answer(self, page: Page, prompt: str) -> AsyncIterator[str]:
+        """Wait for the answer to finish, then emit it once as Markdown.
+
+        Completion is detected on the plain ``inner_text`` (which is stable to
+        diff as the answer streams and reflows). We deliberately do *not* stream
+        Markdown deltas: rebuilding Markdown from the noisy, still-growing DOM
+        each tick would reflow links/formatting and corrupt the deltas. Once the
+        text settles we read the container's ``innerHTML`` and convert it, so the
+        client gets faithful formatting (lists, headings, inline references)
+        rather than flattened prose.
+        """
         deadline = time.monotonic() + self.settings.response_timeout_s
         poll = self.settings.poll_interval_s
 
-        emitted = ""
+        container = await self._container(page)
+        last_text = ""
         stable_ticks = 0
         saw_text = False
         while time.monotonic() < deadline:
@@ -123,23 +135,28 @@ class GoogleAIModeProvider(BaseChatProvider):
                 continue
 
             answer = _extract_answer(raw, prompt)
-            if answer and answer != emitted:
+            if answer and answer != last_text:
                 saw_text = True
-                if answer.startswith(emitted):
-                    yield answer[len(emitted):]
-                else:
-                    yield "\n" + answer
-                emitted = answer
+                last_text = answer
                 stable_ticks = 0
             elif saw_text:
                 # Text stopped growing — treat sustained stability as "done".
                 stable_ticks += 1
                 if stable_ticks >= 4:  # ~4 * poll seconds of no change
-                    return
+                    break
             await asyncio.sleep(poll)
 
         if not saw_text:
             raise ProviderTimeout("Google AI Mode produced no answer text.")
+
+        # Answer has settled — reconstruct Markdown from the final DOM and trim
+        # the same UI chrome (query echo, footer boilerplate) the text pass cuts.
+        try:
+            html = await container.inner_html()
+        except PlaywrightError:
+            html = ""
+        answer_md = _extract_answer(html_to_markdown(html), prompt) if html else ""
+        yield answer_md or last_text
 
 
 def _extract_answer(raw: str, prompt: str) -> str:

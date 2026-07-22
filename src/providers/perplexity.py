@@ -239,21 +239,7 @@ class PerplexityProvider(BrowserChatProvider):
             return None
         return effort not in ("none", "minimal")
 
-    async def _reply_text(self, bubbles) -> str:
-        """Read the answer, minus Perplexity's inline citation chips.
-
-        Perplexity injects `<span class="citation …">` badges (e.g. "formula1 +1")
-        into the prose; `inner_text()` would fold their label text into the answer.
-        We clone the node, drop citation spans, and read the cleaned text so output
-        matches tool-free providers like ExpressAI.
-        """
-        if not await bubbles.count():
-            return ""
-        text = await bubbles.last.evaluate(
-            """(el) => {
-                const clone = el.cloneNode(true);
-                clone.querySelectorAll('.citation, .citation-nbsp').forEach(n => n.remove());
-                return clone.innerText;
-            }"""
-        )
-        return (text or "").strip()
+    # Reading the answer is fully generic (see BrowserChatProvider._reply_text):
+    # the base reads the prose block's innerHTML and converts it to Markdown, so
+    # Perplexity's inline citation chips (`<span class="citation"><a href>…`)
+    # survive as `[label](url)` links with no provider-specific handling needed.
