@@ -66,6 +66,20 @@ class Settings(BaseSettings):
     max_tab_uses: int = Field(default=200, ge=0)
     # Per-request navigation / element timeout in milliseconds.
     nav_timeout_ms: int = 45_000
+    # How long a request waits for a free tab before giving up with 503. A wedged
+    # tab must not stall every later request behind it indefinitely; a prompt 503
+    # is retryable by the client, an open-ended hang is not.
+    pool_wait_s: float = Field(default=90.0, gt=0)
+    # Attempts (with exponential backoff) to launch Chromium before declaring the
+    # browser unhealthy. Absorbs transient launch failures on slow/loaded hosts.
+    browser_start_attempts: int = Field(default=3, ge=1)
+    # Seconds between watchdog checks that relaunch a browser which died while
+    # idle. 0 disables the watchdog.
+    watchdog_interval_s: float = Field(default=30.0, ge=0)
+    # Retry a failed request once on the next healthy provider (and once more on
+    # the same one with a fresh tab). Only applies when the client did not pin a
+    # provider via a `provider/model` prefix.
+    enable_failover: bool = True
 
     # ---- Provider-specific: ExpressAI -----------------------------------
     expressai_base_url: str = "https://app.expressai.com"

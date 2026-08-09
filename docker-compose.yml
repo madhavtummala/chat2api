@@ -27,11 +27,38 @@ services:
       CHAT2API_PROVIDER: googleaimode
       CHAT2API_HEADLESS: "false"     # headful under Xvfb (required for noVNC)
       CHAT2API_VNC: "true"           # live browser on :6080 for login/debug
+      # One tab per provider: a single active user needs no more, and each tab
+      # is real Chromium memory on a small host.
+      CHAT2API_MAX_CONCURRENCY: "1"
+      # Recycle tabs sooner than the default 200 uses; renderer memory creeps up
+      # long before then on a Raspberry Pi.
+      CHAT2API_MAX_TAB_USES: "50"
     ports:
       - "9000:9000"
-      - "6080:6080"
+      # noVNC has no password, so bind it to loopback and reach it over an SSH /
+      # Tailscale tunnel. Anyone who opens this port drives a browser that is
+      # logged into your accounts.
+      - "127.0.0.1:6080:6080"
     volumes:
       - browser_profile:/app/.browser_profile
+    # Without this the server can sit "up" for weeks serving 500s: a browser that
+    # cannot be relaunched makes /health return 503, and the restart policy then
+    # actually fires. Uses the cheap health path — never `?deep=1`, which would
+    # navigate a tab per provider and compete with real traffic.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:9000/health').read()"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s   # Chromium's first launch is slow on a small host
+    # Cap the container so a Chromium leak OOMs *it* and gets restarted, instead
+    # of taking the whole host (including sshd) down with it.
+    mem_limit: 1500m
+    cpus: 3.0
 
 volumes:
   browser_profile:

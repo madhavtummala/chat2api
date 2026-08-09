@@ -20,15 +20,29 @@ is_true() {
   esac
 }
 
-# Start an off-screen X server on $DISPLAY and wait for it to accept clients.
+# Start an off-screen X server on $DISPLAY and wait until it is really serving.
 start_xvfb() {
   export DISPLAY="${DISPLAY:-:99}"
   local res="${VNC_RESOLUTION:-1360x1020x24}"
+  local n="${DISPLAY#:}"
+  # A restart-in-place keeps /tmp, so a lock/socket left by the previous run
+  # makes Xvfb refuse to start ("Server is already active for display N") while
+  # the leftover socket file fools a naive existence check into reporting ready.
+  # Clear both before launching.
+  rm -f "/tmp/.X${n}-lock" "/tmp/.X11-unix/X${n}"
   Xvfb "$DISPLAY" -screen 0 "$res" -nolisten tcp &
+  local xvfb_pid=$!
   for _ in $(seq 1 50); do
-    [ -e "/tmp/.X11-unix/X${DISPLAY#:}" ] && break
+    # If Xvfb died (e.g. lock conflict) the socket alone means nothing.
+    if ! kill -0 "$xvfb_pid" 2>/dev/null; then
+      echo "Xvfb exited during startup on $DISPLAY" >&2
+      return 1
+    fi
+    [ -e "/tmp/.X11-unix/X${n}" ] && return 0
     sleep 0.1
   done
+  echo "Xvfb did not become ready on $DISPLAY" >&2
+  return 1
 }
 
 # Expose the current $DISPLAY over noVNC (:6080). NOTE: no VNC password — reach
@@ -43,6 +57,13 @@ start_vnc() {
 if [ "$#" -gt 0 ] && [ "$1" != "server" ]; then
   exec "$@"
 fi
+
+# Chromium refuses to reuse a profile that still holds a Singleton* lock from a
+# previous, uncleanly-killed run (SIGKILL / OOM skip a graceful close). Nothing
+# is using the profile yet at container start, so clearing these is safe and
+# lets the browser launch instead of erroring out "profile already in use".
+profile_dir="${CHAT2API_USER_DATA_DIR:-/app/.browser_profile}"
+rm -f "$profile_dir/SingletonLock" "$profile_dir/SingletonCookie" "$profile_dir/SingletonSocket"
 
 if ! is_true "${CHAT2API_HEADLESS:-true}"; then
   start_xvfb
