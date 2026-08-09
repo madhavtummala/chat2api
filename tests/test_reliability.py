@@ -224,6 +224,24 @@ def test_health_ok_while_browser_is_merely_down_and_recoverable():
     assert resp.json()["browser"] == "down"
 
 
+# -- optional dependencies -----------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_broken_mcp_sdk_disables_tools_instead_of_crashing(monkeypatch):
+    """MCP is an enhancement; an SDK break must not take the whole API down."""
+    from src import mcp_bridge
+
+    monkeypatch.setattr(mcp_bridge, "MCP_SDK_ERROR", "no such symbol")
+    manager = mcp_bridge.McpManager([mcp_bridge.McpServerSpec(label="srv")])
+
+    await manager.startup()  # must not raise
+
+    assert not manager.has_tools
+    assert manager.openai_tools() == []
+    await manager.shutdown()
+
+
 # -- browser manager recovery -------------------------------------------
 
 
