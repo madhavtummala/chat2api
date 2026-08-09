@@ -87,13 +87,40 @@ upstream-auth error instead of hanging, and the login state is cached and expose
 on **`GET /health`** (per provider):
 
 ```jsonc
-{"status": "ok", "provider": "expressai", "authenticated": true,
+{"status": "ok", "browser": "up", "provider": "expressai", "authenticated": true,
  "providers": {"expressai": true, "googleaimode": null}}
 ```
 
 `GET /health?deep=1` actively re-probes the live UI. To recover, re-authenticate
 once with `CHAT2API_HEADLESS=false` (the login persists in the browser profile)
 or supply a fresh `CHAT2API_STORAGE_STATE`.
+
+Being logged out is deliberately **not** unhealthy: `/health` still returns 200,
+because the fix is a human at the noVNC session and a restart would only
+interrupt them.
+
+## Staying up
+
+Three mechanisms keep the server serving without a human:
+
+- **Browser recovery.** Chromium can die long after a clean start (OOM kill,
+  renderer crash, X server going away). The manager notices the context closing,
+  drops all tab state, and relaunches on the next request — or within
+  `WATCHDOG_INTERVAL_S` if the server is idle.
+- **Health that can fail.** `/health` returns **503** only when the browser is
+  down *and* the last relaunch attempt failed, i.e. a genuine outage. The
+  container healthcheck watches this, so `restart: unless-stopped` actually
+  fires. Use the plain path — `?deep=1` navigates a tab per provider and would
+  compete with real traffic.
+- **Provider failover.** A request whose model is *not* pinned to a
+  `provider/model` prefix is retried once on the same provider (fresh tab) and
+  then on other capable providers, so one site's DOM change is not an outage.
+  Timeouts and logged-out sessions skip the same-provider retry. Failover never
+  happens after the first delta has been streamed.
+
+A browser that cannot be launched at all fails startup, so the container exits
+and the restart policy retries rather than serving 500s behind a healthy-looking
+container.
 
 ## Configuration reference
 
@@ -117,5 +144,9 @@ All settings use the `CHAT2API_` env prefix (optionally via a `.env` file).
 | `NAV_TIMEOUT_MS` | `45000` | Per-request navigation / element timeout |
 | `RESPONSE_TIMEOUT_S` | `180` | Max wait for a full model response |
 | `POLL_INTERVAL_S` | `0.2` | DOM polling interval while streaming |
+| `POOL_WAIT_S` | `90` | Max wait for a free tab before returning 503 |
+| `BROWSER_START_ATTEMPTS` | `3` | Chromium launch attempts (exponential backoff) |
+| `WATCHDOG_INTERVAL_S` | `30` | Relaunch check for a browser that died while idle (`0` = off) |
+| `ENABLE_FAILOVER` | `true` | Retry a failed request on another provider (unpinned models only) |
 | `EXPRESSAI_BASE_URL` | `https://app.expressai.com` | ExpressAI site URL |
 | `PERPLEXITY_BASE_URL` | `https://www.perplexity.ai` | Perplexity site URL |

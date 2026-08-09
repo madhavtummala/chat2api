@@ -39,6 +39,11 @@ class ProviderRouter:
         self._instances: dict[str, BaseChatProvider] = {}
 
     @property
+    def settings(self) -> Settings:
+        """The active configuration (the API layer reads failover policy here)."""
+        return self._settings
+
+    @property
     def default_name(self) -> str:
         return self._default
 

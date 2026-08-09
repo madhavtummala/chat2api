@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from ..core.errors import ProviderError
+from ..core.errors import AuthenticationRequired, ProviderError, ProviderTimeout
 from ..core.messages import flatten_messages
 from ..core.tools import (
     TextEvent,
@@ -47,15 +48,102 @@ def get_mcp(request: Request):
     return getattr(request.app.state, "mcp", None)
 
 
+Attempt = tuple[BaseChatProvider, str]
+
+
+def build_attempts(
+    provider_router: ProviderRouter,
+    primary: BaseChatProvider,
+    model: str,
+    explicit: bool,
+    use_tools: bool,
+    chat_request: ChatRequest,
+) -> list[Attempt]:
+    """Ordered ``(provider, model)`` attempts for one request.
+
+    Browser automation fails for reasons that are frequently *not* the client's
+    fault and often not even persistent: a site ships a DOM change, a tab wedges,
+    a session drops. Since we already front several interchangeable chat UIs,
+    the cheapest availability win is to try another one rather than 500.
+
+    We never do this when the caller pinned a backend with `provider/model` —
+    they asked for that specific model and silently answering from a different
+    one would be worse than an error. Fallbacks run on their own default model
+    (the requested id is meaningless elsewhere) and only if they support every
+    capability this request needs.
+    """
+    attempts: list[Attempt] = [(primary, model)]
+    config = getattr(provider_router, "settings", None)
+    if explicit or not getattr(config, "enable_failover", False):
+        return attempts
+    # Same provider once more: the failed tab was recycled on the way out, so
+    # this retry runs on a fresh one — enough to absorb a transient DOM flake.
+    attempts.append((primary, model))
+    for other in provider_router.all_providers():
+        if other.name == primary.name:
+            continue
+        if use_tools and not other.supports_tools:
+            continue
+        if chat_request.attachments and not other.supports_attachments:
+            continue
+        attempts.append((other, other.default_model))
+    return attempts
+
+
+async def generate_with_failover(
+    attempts: list[Attempt], chat_request: ChatRequest
+) -> AsyncIterator[str]:
+    """Run ``attempts`` in order until one produces a reply.
+
+    Fall-through is only legal *before the first delta*: once the client has seen
+    part of an answer, switching backends would splice two different replies
+    together, so a mid-stream failure is always raised.
+    """
+    exhausted: set[str] = set()
+    produced = False
+    last: ProviderError | None = None
+
+    for provider, model in attempts:
+        if provider.name in exhausted:
+            continue
+        try:
+            async for delta in provider.generate(replace(chat_request, model=model)):
+                produced = True
+                yield delta
+            return
+        except ProviderError as exc:
+            if produced:
+                raise
+            last = exc
+            # A timeout means the site is slow (another attempt costs a second
+            # full timeout); a logged-out session won't fix itself. Neither is
+            # worth retrying on the *same* provider — move on to a different one.
+            if isinstance(exc, (ProviderTimeout, AuthenticationRequired)):
+                exhausted.add(provider.name)
+            logger.warning("Provider %r failed: %s", provider.name, exc)
+
+    assert last is not None  # attempts is non-empty, so we either returned or failed
+    raise last
+
+
 @router.get("/health")
 async def health(
-    deep: bool = False, provider_router: ProviderRouter = Depends(get_router)
-) -> dict:
+    request: Request,
+    deep: bool = False,
+    provider_router: ProviderRouter = Depends(get_router),
+) -> JSONResponse:
     """Liveness + per-provider login state.
+
+    Returns **503** when the browser is unrecoverably down, so a container
+    healthcheck can restart us; a browser that merely died and will be
+    relaunched still reports 200 (see ``BrowserManager.healthy``). Being logged
+    out is *not* unhealthy — that needs a human at the noVNC session, not a
+    restart, and restarting would only interrupt them.
 
     Each provider's `authenticated` is its cached login state (updated on every
     request); pass `?deep=1` to actively re-probe every provider (navigates a
-    tab per provider, warming any that are still cold).
+    tab per provider, warming any that are still cold). Keep `deep` out of
+    automated healthchecks: it competes with real traffic for pooled tabs.
     """
     providers: dict[str, bool | None] = {}
     for provider in provider_router.all_providers():
@@ -63,12 +151,18 @@ async def health(
             await provider.check_authentication() if deep else provider.authenticated
         )
     default = provider_router.default_name
-    return {
-        "status": "ok",
-        "provider": default,
-        "authenticated": providers.get(default),
-        "providers": providers,
-    }
+    browser = getattr(request.app.state, "browser", None)
+    healthy = browser.healthy if browser is not None else True
+    return JSONResponse(
+        status_code=200 if healthy else 503,
+        content={
+            "status": "ok" if healthy else "unavailable",
+            "browser": "up" if (browser is None or browser.is_alive) else "down",
+            "provider": default,
+            "authenticated": providers.get(default),
+            "providers": providers,
+        },
+    )
 
 
 @router.get("/v1/models", dependencies=[Depends(require_api_key)])
@@ -110,7 +204,11 @@ async def chat_completions(
     # `provider/` prefix. An explicitly-requested model must be one the resolved
     # provider offers — we never switch to an unknown one. An omitted model
     # falls back to that provider's default.
-    provider, model = resolve_provider(provider_router, body.resolve_model())
+    requested = body.resolve_model()
+    provider, model = resolve_provider(provider_router, requested)
+    # `split` only yields a provider name when the string really carried that
+    # prefix, so this distinguishes "route me to X" from "use the default".
+    explicit = requested.startswith(f"{provider.name}/")
     if model:
         validate_model(provider, model)
     else:
@@ -149,16 +247,21 @@ async def chat_completions(
         )
 
     completion_id = fmt.new_completion_id()
+    attempts = build_attempts(
+        provider_router, provider, model, explicit, use_tools, chat_request
+    )
 
     if body.stream:
         return StreamingResponse(
-            _stream(provider, chat_request, completion_id, model, use_tools),
+            _stream(attempts, chat_request, completion_id, model, use_tools),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
     try:
-        content, tool_calls = await collect(provider.generate(chat_request), use_tools)
+        content, tool_calls = await collect(
+            generate_with_failover(attempts, chat_request), use_tools
+        )
     except ProviderError as exc:
         return _provider_error(exc)
 
@@ -169,7 +272,7 @@ async def chat_completions(
 
 
 async def _stream(
-    provider: BaseChatProvider,
+    attempts: list[Attempt],
     chat_request: ChatRequest,
     completion_id: str,
     model: str,
@@ -196,7 +299,7 @@ async def _stream(
         return None
 
     try:
-        async for delta in provider.generate(chat_request):
+        async for delta in generate_with_failover(attempts, chat_request):
             if parser is None:
                 if delta:
                     yield fmt.sse(
