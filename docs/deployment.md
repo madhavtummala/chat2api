@@ -50,7 +50,7 @@ There's no separate login container — you log in on the *running server's* own
 browser, and the session persists to the profile volume. The shipped
 `docker-compose.yml` already runs headful with noVNC exposed
 (`CHAT2API_HEADLESS=false`, `CHAT2API_VNC=true`, port `6080`); just point it at the
-gated provider (`CHAT2API_PROVIDER=expressai` or `perplexity`). Then:
+gated provider (list it in `CHAT2API_PROVIDERS`, e.g. `expressai,perplexity`). Then:
 
 ```bash
 docker compose up -d chat2api
@@ -131,8 +131,7 @@ All settings use the `CHAT2API_` env prefix (optionally via a `.env` file).
 | `HOST` / `PORT` | `0.0.0.0` / `9000` | HTTP bind address |
 | `LOG_LEVEL` | `info` | Log verbosity |
 | `API_KEYS` | *(empty)* | Comma-separated bearer keys; empty = auth off |
-| `PROVIDER` | `googleaimode` | Default provider for unprefixed models |
-| `PROVIDERS` | *(empty)* | Allowlist of routable providers; empty = all registered |
+| `PROVIDERS` | *(empty)* | Ordered list of routable providers; empty = all registered |
 | `MCP_CONFIG_PATH` | `mcp.json` | MCP server config; auto-loaded when present |
 | `ENABLE_RESPONSES` | `true` | Expose `/v1/responses` (agentic loop + MCP execution) |
 | `MAX_AGENT_TURNS` | `6` | Max model↔tool round-trips per `/v1/responses` request |

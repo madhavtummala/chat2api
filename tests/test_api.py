@@ -9,8 +9,8 @@ from fastapi.testclient import TestClient
 def test_health(client):
     body = client.get("/health").json()
     assert body["status"] == "ok"
-    assert body["provider"] == "fake"
-    assert "authenticated" in body  # None until a request checks it
+    assert body["routing"] == ["fake"]
+    assert body["providers"] == {"fake": None}  # None until a request checks it
 
 
 def test_list_models(client):

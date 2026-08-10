@@ -11,7 +11,7 @@ single file of CSS selectors on top of the shared `BrowserChatProvider` base.
 | `perplexity` | `perplexity.ai` | **optional** | works logged-out (login unlocks more models); native web search (always on), self-enabled incognito, model picker, `reasoning_effort` → Thinking mode |
 | `googleaimode` | Google Search AI Mode (`udm=50`) | **none** | auth-free; great for demos, but Google throttles heavy automated use |
 
-Set the default with `CHAT2API_PROVIDER=<name>`, and restrict routable providers
+Set the routable providers, in preference order, with `CHAT2API_PROVIDERS=<a,b>`
 with `CHAT2API_PROVIDERS` (see [API → Model routing](api.md#model-routing)).
 Perplexity keeps proxied chats out of your history by enabling **incognito**
 itself.
@@ -27,7 +27,7 @@ itself.
 2. Set capability flags (`supports_tools`, `supports_web_search`,
    `supports_attachments`, `supports_thread_continuation`) to match the UI.
 3. Register it in `src/providers/registry.py`.
-4. Select it with `CHAT2API_PROVIDER=<name>` (or route to it via the
+4. Select it by adding it to `CHAT2API_PROVIDERS` (and route to it via the
    `provider/model` model syntax).
 
 Because all site-specific assumptions live in the `Selectors` dataclass, the rest
@@ -44,7 +44,7 @@ when a layout changes.
 ## Google AI Mode (auth-free demo backend)
 
 ```bash
-CHAT2API_PROVIDER=googleaimode python -m src.main
+CHAT2API_PROVIDERS=googleaimode python -m src.main
 curl http://localhost:9000/v1/chat/completions -H 'Content-Type: application/json' \
   -d '{"model":"google-ai-mode","messages":[{"role":"user","content":"capital of Japan?"}]}'
 ```

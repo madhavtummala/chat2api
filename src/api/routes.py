@@ -18,7 +18,12 @@ from ..core.tools import (
     build_tools_preamble,
 )
 from ..core.types import ChatMessage, ChatRequest
-from ..providers import BaseChatProvider, ProviderRouter
+from ..providers import (
+    BaseChatProvider,
+    ModelRequired,
+    ProviderRouter,
+    UnknownModel,
+)
 from . import openai_format as fmt
 from .auth import require_api_key
 from .schemas import ChatCompletionRequest, ModelCard, ModelList
@@ -34,13 +39,26 @@ def get_router(request: Request) -> ProviderRouter:
 
 def resolve_provider(
     provider_router: ProviderRouter, model: str
-) -> tuple[BaseChatProvider, str]:
-    """Map a (possibly ``provider/``-prefixed) model to (provider, bare_model)."""
-    name, bare_model = provider_router.split(model)
+) -> tuple[BaseChatProvider, str, bool]:
+    """Resolve a model to ``(provider, bare_model, pinned)``, or raise 400/404."""
     try:
-        return provider_router.get(name), bare_model
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"Unknown provider {name!r}.") from None
+        return provider_router.resolve(model)
+    except ModelRequired:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "A model is required, as `provider/model` — exactly as listed by "
+                "GET /v1/models. There is no default provider."
+            ),
+        ) from None
+    except UnknownModel:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"The model {model!r} does not exist. "
+                f"Available: {provider_router.catalogue()}."
+            ),
+        ) from None
 
 
 def get_mcp(request: Request):
@@ -55,7 +73,7 @@ def build_attempts(
     provider_router: ProviderRouter,
     primary: BaseChatProvider,
     model: str,
-    explicit: bool,
+    pinned: bool,
     use_tools: bool,
     chat_request: ChatRequest,
 ) -> list[Attempt]:
@@ -74,7 +92,7 @@ def build_attempts(
     """
     attempts: list[Attempt] = [(primary, model)]
     config = getattr(provider_router, "settings", None)
-    if explicit or not getattr(config, "enable_failover", False):
+    if pinned or not getattr(config, "enable_failover", False):
         return attempts
     # Same provider once more: the failed tab was recycled on the way out, so
     # this retry runs on a fresh one — enough to absorb a transient DOM flake.
@@ -90,8 +108,30 @@ def build_attempts(
     return attempts
 
 
+class Served:
+    """Records which attempt actually answered, for reporting back to the client.
+
+    Failover must not be silent: a caller who asked for the default and got a
+    different backend needs to see that in the response ``model``, otherwise
+    they cannot tell a fallback answer from a primary one.
+    """
+
+    def __init__(self, provider_name: str, model: str):
+        self.provider_name = provider_name
+        self.model = model
+        self.substituted = False
+
+    def record(self, provider: BaseChatProvider, model: str) -> None:
+        self.substituted = provider.name != self.provider_name
+        self.provider_name, self.model = provider.name, model
+
+    def label(self, requested: str) -> str:
+        """The model id to report: qualified only when a fallback answered."""
+        return f"{self.provider_name}/{self.model}" if self.substituted else requested
+
+
 async def generate_with_failover(
-    attempts: list[Attempt], chat_request: ChatRequest
+    attempts: list[Attempt], chat_request: ChatRequest, served: Served | None = None
 ) -> AsyncIterator[str]:
     """Run ``attempts`` in order until one produces a reply.
 
@@ -108,6 +148,8 @@ async def generate_with_failover(
             continue
         try:
             async for delta in provider.generate(replace(chat_request, model=model)):
+                if not produced and served is not None:
+                    served.record(provider, model)
                 produced = True
                 yield delta
             return
@@ -150,7 +192,6 @@ async def health(
         providers[provider.name] = (
             await provider.check_authentication() if deep else provider.authenticated
         )
-    default = provider_router.default_name
     browser = getattr(request.app.state, "browser", None)
     healthy = browser.healthy if browser is not None else True
     return JSONResponse(
@@ -158,8 +199,8 @@ async def health(
         content={
             "status": "ok" if healthy else "unavailable",
             "browser": "up" if (browser is None or browser.is_alive) else "down",
-            "provider": default,
-            "authenticated": providers.get(default),
+            # Routable providers, in the order failover walks them.
+            "routing": provider_router.enabled,
             "providers": providers,
         },
     )
@@ -204,15 +245,9 @@ async def chat_completions(
     # `provider/` prefix. An explicitly-requested model must be one the resolved
     # provider offers — we never switch to an unknown one. An omitted model
     # falls back to that provider's default.
-    requested = body.resolve_model()
-    provider, model = resolve_provider(provider_router, requested)
-    # `split` only yields a provider name when the string really carried that
-    # prefix, so this distinguishes "route me to X" from "use the default".
-    explicit = requested.startswith(f"{provider.name}/")
-    if model:
+    provider, model, pinned = resolve_provider(provider_router, body.resolve_model())
+    if pinned:
         validate_model(provider, model)
-    else:
-        model = provider.default_model
     # Tools come from the client (function tools) plus any configured MCP
     # servers. Chat Completions delegates execution: parsed calls are returned
     # to the client (which owns/executes them), so we only list + inject here.
@@ -248,26 +283,29 @@ async def chat_completions(
 
     completion_id = fmt.new_completion_id()
     attempts = build_attempts(
-        provider_router, provider, model, explicit, use_tools, chat_request
+        provider_router, provider, model, pinned, use_tools, chat_request
     )
+    served = Served(provider.name, model)
 
     if body.stream:
         return StreamingResponse(
-            _stream(attempts, chat_request, completion_id, model, use_tools),
+            _stream(attempts, chat_request, completion_id, model, use_tools, served),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
     try:
         content, tool_calls = await collect(
-            generate_with_failover(attempts, chat_request), use_tools
+            generate_with_failover(attempts, chat_request, served), use_tools
         )
     except ProviderError as exc:
         return _provider_error(exc)
 
     prompt = flatten_messages(chat_request.messages)
     return JSONResponse(
-        fmt.full_completion(completion_id, model, content, prompt, tool_calls)
+        fmt.full_completion(
+            completion_id, served.label(model), content, prompt, tool_calls
+        )
     )
 
 
@@ -277,6 +315,7 @@ async def _stream(
     completion_id: str,
     model: str,
     use_tools: bool,
+    served: Served,
 ) -> AsyncIterator[str]:
     yield fmt.sse(fmt.chunk(completion_id, model, delta={"role": "assistant"}))
     parser = ToolCallParser() if use_tools else None
@@ -285,25 +324,28 @@ async def _stream(
 
     def render(event) -> str | None:
         nonlocal tool_index, saw_tool_call
+        served_model = served.label(model)
         if isinstance(event, ToolCallEvent):
             saw_tool_call = True
             delta = fmt.tool_call_delta(
                 tool_index, fmt.new_tool_call_id(), event.name, event.arguments
             )
             tool_index += 1
-            return fmt.sse(fmt.chunk(completion_id, model, delta=delta))
+            return fmt.sse(fmt.chunk(completion_id, served_model, delta=delta))
         if isinstance(event, TextEvent) and event.text:
             return fmt.sse(
-                fmt.chunk(completion_id, model, delta={"content": event.text})
+                fmt.chunk(completion_id, served_model, delta={"content": event.text})
             )
         return None
 
     try:
-        async for delta in generate_with_failover(attempts, chat_request):
+        async for delta in generate_with_failover(attempts, chat_request, served):
             if parser is None:
                 if delta:
                     yield fmt.sse(
-                        fmt.chunk(completion_id, model, delta={"content": delta})
+                        fmt.chunk(
+                            completion_id, served.label(model), delta={"content": delta}
+                        )
                     )
                 continue
             for event in parser.feed(delta):
@@ -328,7 +370,9 @@ async def _stream(
 
     finish_reason = "tool_calls" if saw_tool_call else "stop"
     yield fmt.sse(
-        fmt.chunk(completion_id, model, delta={}, finish_reason=finish_reason)
+        fmt.chunk(
+            completion_id, served.label(model), delta={}, finish_reason=finish_reason
+        )
     )
     yield fmt.SSE_DONE
 
