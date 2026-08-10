@@ -47,9 +47,9 @@ async def create_response(
     mcp=Depends(get_mcp),
     sessions=Depends(get_sessions),
 ):
-    provider, model = resolve_provider(provider_router, body.model or "")
-    body.model = model or provider.default_model
-    if model:
+    provider, model, pinned = resolve_provider(provider_router, body.model or "")
+    body.model = model
+    if pinned:
         validate_model(provider, model)
     # Rebuild the conversation: prior history (if continuing) + this turn's input.
     history: list[ChatMessage] = []

@@ -5,7 +5,7 @@
 # immediately if you switch to a login-gated provider (expressai/perplexity). Any
 # login session persists to the profile volume, surviving restarts.
 #
-# Log in to a gated provider (after setting CHAT2API_PROVIDER below):
+# Log in to a gated provider (after listing it in CHAT2API_PROVIDERS below):
 #   1. docker compose up -d chat2api
 #   2. watch for `"authenticated": false` at http://<host>:9000/health
 #   3. open http://<host>:6080/vnc.html, click Connect, log in in the browser
@@ -24,7 +24,9 @@ services:
     container_name: chat2api
     restart: unless-stopped
     environment:
-      CHAT2API_PROVIDER: googleaimode
+      # Ordered list of routable providers — the whole routing config. Clients
+      # address models as `provider/model`, exactly as GET /v1/models lists them.
+      CHAT2API_PROVIDERS: expressai,perplexity
       CHAT2API_HEADLESS: "false"     # headful under Xvfb (required for noVNC)
       CHAT2API_VNC: "true"           # live browser on :6080 for login/debug
       # One tab per provider: a single active user needs no more, and each tab

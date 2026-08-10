@@ -1,9 +1,8 @@
-import pytest
 from fastapi.testclient import TestClient
 
 from src.providers.base import BaseChatProvider
 
-from .conftest import FakeProvider, make_app
+from .conftest import make_app
 
 
 class DynamicProvider(BaseChatProvider):
@@ -66,7 +65,8 @@ async def test_unknown_model_is_rejected():
     assert ok.status_code == 200
 
 
-async def test_omitted_model_uses_provider_default():
+async def test_omitted_model_is_rejected():
+    """No default provider exists, so there is nothing to guess from."""
     provider = DynamicProvider(None, None)
     await provider.refresh_models()
     client = TestClient(make_app(provider))
@@ -74,5 +74,5 @@ async def test_omitted_model_uses_provider_default():
         "/v1/chat/completions",
         json={"messages": [{"role": "user", "content": "hi"}]},  # no model
     )
-    assert resp.status_code == 200
-    assert resp.json()["model"] == provider.default_model
+    assert resp.status_code == 400
+    assert "provider/model" in resp.json()["detail"]

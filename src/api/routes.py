@@ -18,7 +18,12 @@ from ..core.tools import (
     build_tools_preamble,
 )
 from ..core.types import ChatMessage, ChatRequest
-from ..providers import BaseChatProvider, ProviderRouter
+from ..providers import (
+    BaseChatProvider,
+    ModelRequired,
+    ProviderRouter,
+    UnknownModel,
+)
 from . import openai_format as fmt
 from .auth import require_api_key
 from .schemas import ChatCompletionRequest, ModelCard, ModelList
@@ -34,13 +39,26 @@ def get_router(request: Request) -> ProviderRouter:
 
 def resolve_provider(
     provider_router: ProviderRouter, model: str
-) -> tuple[BaseChatProvider, str]:
-    """Map a (possibly ``provider/``-prefixed) model to (provider, bare_model)."""
-    name, bare_model = provider_router.split(model)
+) -> tuple[BaseChatProvider, str, bool]:
+    """Resolve a model to ``(provider, bare_model, pinned)``, or raise 400/404."""
     try:
-        return provider_router.get(name), bare_model
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"Unknown provider {name!r}.") from None
+        return provider_router.resolve(model)
+    except ModelRequired:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "A model is required, as `provider/model` — exactly as listed by "
+                "GET /v1/models. There is no default provider."
+            ),
+        ) from None
+    except UnknownModel:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"The model {model!r} does not exist. "
+                f"Available: {provider_router.catalogue()}."
+            ),
+        ) from None
 
 
 def get_mcp(request: Request):
@@ -55,7 +73,7 @@ def build_attempts(
     provider_router: ProviderRouter,
     primary: BaseChatProvider,
     model: str,
-    explicit: bool,
+    pinned: bool,
     use_tools: bool,
     chat_request: ChatRequest,
 ) -> list[Attempt]:
@@ -74,7 +92,7 @@ def build_attempts(
     """
     attempts: list[Attempt] = [(primary, model)]
     config = getattr(provider_router, "settings", None)
-    if explicit or not getattr(config, "enable_failover", False):
+    if pinned or not getattr(config, "enable_failover", False):
         return attempts
     # Same provider once more: the failed tab was recycled on the way out, so
     # this retry runs on a fresh one — enough to absorb a transient DOM flake.
@@ -174,7 +192,6 @@ async def health(
         providers[provider.name] = (
             await provider.check_authentication() if deep else provider.authenticated
         )
-    default = provider_router.default_name
     browser = getattr(request.app.state, "browser", None)
     healthy = browser.healthy if browser is not None else True
     return JSONResponse(
@@ -182,8 +199,8 @@ async def health(
         content={
             "status": "ok" if healthy else "unavailable",
             "browser": "up" if (browser is None or browser.is_alive) else "down",
-            "provider": default,
-            "authenticated": providers.get(default),
+            # Routable providers, in the order failover walks them.
+            "routing": provider_router.enabled,
             "providers": providers,
         },
     )
@@ -228,15 +245,9 @@ async def chat_completions(
     # `provider/` prefix. An explicitly-requested model must be one the resolved
     # provider offers — we never switch to an unknown one. An omitted model
     # falls back to that provider's default.
-    requested = body.resolve_model()
-    provider, model = resolve_provider(provider_router, requested)
-    # `split` only yields a provider name when the string really carried that
-    # prefix, so this distinguishes "route me to X" from "use the default".
-    explicit = requested.startswith(f"{provider.name}/")
-    if model:
+    provider, model, pinned = resolve_provider(provider_router, body.resolve_model())
+    if pinned:
         validate_model(provider, model)
-    else:
-        model = provider.default_model
     # Tools come from the client (function tools) plus any configured MCP
     # servers. Chat Completions delegates execution: parsed calls are returned
     # to the client (which owns/executes them), so we only list + inject here.
@@ -272,7 +283,7 @@ async def chat_completions(
 
     completion_id = fmt.new_completion_id()
     attempts = build_attempts(
-        provider_router, provider, model, explicit, use_tools, chat_request
+        provider_router, provider, model, pinned, use_tools, chat_request
     )
     served = Served(provider.name, model)
 

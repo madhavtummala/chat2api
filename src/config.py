@@ -28,14 +28,10 @@ class Settings(BaseSettings):
     api_keys: str = ""
 
     # ---- Provider selection ---------------------------------------------
-    # The *default* provider: used for requests whose model has no `provider/`
-    # prefix (e.g. `GPT OSS 120B`), and warmed at startup. Defaults to the
-    # auth-free Google AI Mode backend so the container works out of the box.
-    provider: str = "googleaimode"
-
-    # Comma-separated allowlist of providers this server may route to via the
-    # `provider/model` model syntax (e.g. `perplexity/Gemini 3.1 Pro`). Empty
-    # means "all registered providers". The default provider is always allowed.
+    # Comma-separated, **ordered** list of routable providers, e.g.
+    # `expressai,perplexity`. The order is the routing preference: the first
+    # entry serves requests that don't name a provider, and the rest are the
+    # failover order behind it. Empty means "all registered providers".
     # Providers are instantiated lazily and their tabs warmed on first use.
     providers: str = ""
 
@@ -98,9 +94,9 @@ class Settings(BaseSettings):
         return {k.strip() for k in self.api_keys.split(",") if k.strip()}
 
     @property
-    def enabled_provider_set(self) -> set[str]:
-        """Explicit provider allowlist from ``providers`` (empty = no filter)."""
-        return {p.strip() for p in self.providers.split(",") if p.strip()}
+    def provider_order(self) -> list[str]:
+        """Routable providers in preference order (empty = all registered)."""
+        return [p.strip() for p in self.providers.split(",") if p.strip()]
 
 
 settings = Settings()

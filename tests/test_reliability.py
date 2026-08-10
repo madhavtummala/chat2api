@@ -16,7 +16,6 @@ from src.core.errors import (
     ProviderUnavailable,
 )
 from src.core.types import ChatRequest
-from src.providers.base import BaseChatProvider
 
 from .conftest import FakeProvider
 
@@ -58,12 +57,7 @@ class MultiRouter:
 
     def __init__(self, providers, enable_failover=True):
         self._providers = {p.name: p for p in providers}
-        self._default = providers[0].name
         self.settings = Settings(enable_failover=enable_failover)
-
-    @property
-    def default_name(self):
-        return self._default
 
     @property
     def enabled(self):
@@ -75,11 +69,17 @@ class MultiRouter:
     def all_providers(self):
         return list(self._providers.values())
 
-    def split(self, model):
+    def resolve(self, model):
         prefix, sep, rest = model.partition("/")
         if sep and prefix in self._providers:
-            return prefix, rest
-        return self._default, model
+            return self._providers[prefix], rest, True
+        for provider in self._providers.values():
+            if provider.supports_model(model):
+                return provider, model, False
+        raise AssertionError(f"no provider offers {model!r}")
+
+    def catalogue(self):
+        return {n: p.models for n, p in self._providers.items()}
 
 
 def make_client(providers, enable_failover=True, browser=None):

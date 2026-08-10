@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from src.api.routes import router
 from src.core.errors import ProviderError
+from src.providers.router import ModelRequired, UnknownModel
 from src.core.types import ChatRequest
 from src.providers.base import BaseChatProvider
 
@@ -41,10 +42,6 @@ class FakeRouter:
         self._provider = provider
 
     @property
-    def default_name(self) -> str:
-        return self._provider.name
-
-    @property
     def enabled(self) -> list[str]:
         return [self._provider.name]
 
@@ -56,11 +53,18 @@ class FakeRouter:
     def all_providers(self) -> list[BaseChatProvider]:
         return [self._provider]
 
-    def split(self, model: str) -> tuple[str, str]:
+    def resolve(self, model: str) -> tuple[BaseChatProvider, str, bool]:
         prefix, sep, rest = model.partition("/")
         if sep and prefix == self._provider.name:
-            return prefix, rest
-        return self._provider.name, model
+            return self._provider, rest, True
+        if not model:
+            raise ModelRequired()
+        if self._provider.supports_model(model):
+            return self._provider, model, False
+        raise UnknownModel(model)
+
+    def catalogue(self) -> dict[str, list[str]]:
+        return {self._provider.name: self._provider.models}
 
 
 def make_app(provider: BaseChatProvider) -> FastAPI:

@@ -50,8 +50,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
         browser = BrowserManager(config)
         provider_router = ProviderRouter(config, browser)
         logger.info(
-            "Booting chat2api: default provider=%s, routable=%s (registered: %s)",
-            provider_router.default_name,
+            "Booting chat2api: routing order=%s (registered: %s)",
             provider_router.enabled,
             available_providers(),
         )
@@ -69,22 +68,25 @@ def create_app(config: Settings | None = None) -> FastAPI:
         # Past this point the browser works, so nothing is fatal. In particular a
         # logged-out provider MUST NOT stop the server: logging in means reaching
         # the live browser over noVNC, which requires the container to stay up.
-        try:
-            # Warm only the default provider so /health has a login state at
-            # boot; other providers warm lazily on first request.
-            default = provider_router.get(provider_router.default_name)
-            await default.startup()
-            await default.refresh_models()
-        except AuthenticationRequired:
-            logger.warning(
-                "Default provider %r is logged out — serving anyway. Log in via noVNC; "
-                "/health reports authenticated=false until you do.",
-                provider_router.default_name,
-            )
-        except Exception:
-            logger.exception(
-                "Default provider warm-up failed; serving anyway (retried per request)"
-            )
+        # Warm every routable provider so /health carries a real login state for
+        # each at boot, and /v1/models advertises discovered catalogues. One
+        # provider's problem must not affect the others, hence the per-provider
+        # try — and none of them is fatal.
+        for provider in provider_router.all_providers():
+            try:
+                await provider.startup()
+                await provider.refresh_models()
+            except AuthenticationRequired:
+                logger.warning(
+                    "Provider %r is logged out — serving anyway. Log in via noVNC; "
+                    "/health reports it as authenticated=false until you do.",
+                    provider.name,
+                )
+            except Exception:
+                logger.exception(
+                    "Provider %r warm-up failed; serving anyway (retried per request)",
+                    provider.name,
+                )
         try:
             await mcp.startup()
         except Exception:

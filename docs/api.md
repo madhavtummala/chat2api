@@ -14,7 +14,7 @@ is off by default for local use).
 ## Model routing
 
 One server can front several chat UIs. Pick a backend by prefixing the model with
-the provider name; a bare model uses the default provider (`CHAT2API_PROVIDER`):
+the provider name, exactly as `GET /v1/models` lists it:
 
 ```jsonc
 {"model": "perplexity/Gemini 3.1 Pro", ...}   // explicit provider
