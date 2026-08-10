@@ -90,8 +90,30 @@ def build_attempts(
     return attempts
 
 
+class Served:
+    """Records which attempt actually answered, for reporting back to the client.
+
+    Failover must not be silent: a caller who asked for the default and got a
+    different backend needs to see that in the response ``model``, otherwise
+    they cannot tell a fallback answer from a primary one.
+    """
+
+    def __init__(self, provider_name: str, model: str):
+        self.provider_name = provider_name
+        self.model = model
+        self.substituted = False
+
+    def record(self, provider: BaseChatProvider, model: str) -> None:
+        self.substituted = provider.name != self.provider_name
+        self.provider_name, self.model = provider.name, model
+
+    def label(self, requested: str) -> str:
+        """The model id to report: qualified only when a fallback answered."""
+        return f"{self.provider_name}/{self.model}" if self.substituted else requested
+
+
 async def generate_with_failover(
-    attempts: list[Attempt], chat_request: ChatRequest
+    attempts: list[Attempt], chat_request: ChatRequest, served: Served | None = None
 ) -> AsyncIterator[str]:
     """Run ``attempts`` in order until one produces a reply.
 
@@ -108,6 +130,8 @@ async def generate_with_failover(
             continue
         try:
             async for delta in provider.generate(replace(chat_request, model=model)):
+                if not produced and served is not None:
+                    served.record(provider, model)
                 produced = True
                 yield delta
             return
@@ -250,24 +274,27 @@ async def chat_completions(
     attempts = build_attempts(
         provider_router, provider, model, explicit, use_tools, chat_request
     )
+    served = Served(provider.name, model)
 
     if body.stream:
         return StreamingResponse(
-            _stream(attempts, chat_request, completion_id, model, use_tools),
+            _stream(attempts, chat_request, completion_id, model, use_tools, served),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
     try:
         content, tool_calls = await collect(
-            generate_with_failover(attempts, chat_request), use_tools
+            generate_with_failover(attempts, chat_request, served), use_tools
         )
     except ProviderError as exc:
         return _provider_error(exc)
 
     prompt = flatten_messages(chat_request.messages)
     return JSONResponse(
-        fmt.full_completion(completion_id, model, content, prompt, tool_calls)
+        fmt.full_completion(
+            completion_id, served.label(model), content, prompt, tool_calls
+        )
     )
 
 
@@ -277,6 +304,7 @@ async def _stream(
     completion_id: str,
     model: str,
     use_tools: bool,
+    served: Served,
 ) -> AsyncIterator[str]:
     yield fmt.sse(fmt.chunk(completion_id, model, delta={"role": "assistant"}))
     parser = ToolCallParser() if use_tools else None
@@ -285,25 +313,28 @@ async def _stream(
 
     def render(event) -> str | None:
         nonlocal tool_index, saw_tool_call
+        served_model = served.label(model)
         if isinstance(event, ToolCallEvent):
             saw_tool_call = True
             delta = fmt.tool_call_delta(
                 tool_index, fmt.new_tool_call_id(), event.name, event.arguments
             )
             tool_index += 1
-            return fmt.sse(fmt.chunk(completion_id, model, delta=delta))
+            return fmt.sse(fmt.chunk(completion_id, served_model, delta=delta))
         if isinstance(event, TextEvent) and event.text:
             return fmt.sse(
-                fmt.chunk(completion_id, model, delta={"content": event.text})
+                fmt.chunk(completion_id, served_model, delta={"content": event.text})
             )
         return None
 
     try:
-        async for delta in generate_with_failover(attempts, chat_request):
+        async for delta in generate_with_failover(attempts, chat_request, served):
             if parser is None:
                 if delta:
                     yield fmt.sse(
-                        fmt.chunk(completion_id, model, delta={"content": delta})
+                        fmt.chunk(
+                            completion_id, served.label(model), delta={"content": delta}
+                        )
                     )
                 continue
             for event in parser.feed(delta):
@@ -328,7 +359,9 @@ async def _stream(
 
     finish_reason = "tool_calls" if saw_tool_call else "stop"
     yield fmt.sse(
-        fmt.chunk(completion_id, model, delta={}, finish_reason=finish_reason)
+        fmt.chunk(
+            completion_id, served.label(model), delta={}, finish_reason=finish_reason
+        )
     )
     yield fmt.SSE_DONE
 

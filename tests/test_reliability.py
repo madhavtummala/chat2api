@@ -183,6 +183,28 @@ def test_failover_skips_providers_lacking_tool_support():
     assert backup.calls == 0
 
 
+def test_response_reports_the_backend_that_actually_answered():
+    """Silent substitution is indistinguishable from a primary answer."""
+    primary = FailingProvider("primary", ProviderError("broke"))
+    backup = OkProvider("backup", ["ok"], models=("backup-default",))
+    body = post(make_client([primary, backup])).json()
+    assert body["model"] == "backup/backup-default"
+
+
+def test_response_keeps_requested_model_when_primary_answers():
+    primary = OkProvider("primary", ["ok"])
+    backup = OkProvider("backup", ["nope"])
+    body = post(make_client([primary, backup])).json()
+    assert body["model"] == "m"  # unqualified: no substitution happened
+
+
+def test_streaming_chunks_report_the_backend_that_answered():
+    primary = FailingProvider("primary", ProviderError("broke"))
+    backup = OkProvider("backup", ["hi"], models=("backup-default",))
+    text = post(make_client([primary, backup]), stream=True).text
+    assert "backup/backup-default" in text
+
+
 def test_streaming_failover_emits_only_backup_content():
     primary = FailingProvider("primary", ProviderError("broke"))
     backup = OkProvider("backup", ["hello"])
