@@ -124,6 +124,8 @@ class ChatCompletionRequest(BaseModel):
     model: str = ""  # empty -> use the provider's default model
     messages: list[Message] = Field(min_length=1)
     stream: bool = False
+    # Accepted for OpenAI compatibility (clients send them unprompted) but not
+    # forwarded: a chat web UI offers no way to apply them.
     temperature: float | None = None
     max_tokens: int | None = None
     tools: list[Tool] | None = None
@@ -139,7 +141,8 @@ class ChatCompletionRequest(BaseModel):
     # toggle (Perplexity): "minimal"/"none" disables, any other value enables,
     # absent leaves the model default untouched.
     reasoning_effort: str | None = None
-    # Optional: route repeated requests to the same browser conversation/tab.
+    # Accepted and ignored: requests are stateless and take whichever pooled tab
+    # is free, so there is no conversation to route back to.
     conversation_id: str | None = None
     user: str | None = None
 
@@ -170,10 +173,6 @@ class ChatCompletionRequest(BaseModel):
                 for m in self.messages
             ],
             model=self.resolve_model(),
-            conversation_id=self.conversation_id or self.user,
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
-            stream=self.stream,
             web_search=self.resolve_web_search(),
             reasoning_effort=self.reasoning_effort,
             attachments=self.collect_attachments(),

@@ -32,8 +32,6 @@ from .base import BaseChatProvider
 
 logger = logging.getLogger(__name__)
 
-SEARCH_URL = "https://www.google.com/search?udm=50&q="
-
 # Text that marks the end of the answer / start of UI chrome, cut off if seen.
 _FOOTER_MARKERS = (
     "AI can make mistakes",
@@ -73,7 +71,7 @@ class GoogleAIModeProvider(BaseChatProvider):
 
     async def generate(self, request: ChatRequest) -> AsyncIterator[str]:
         prompt = flatten_messages(request.messages)
-        url = SEARCH_URL + quote_plus(prompt)
+        url = self.settings.googleaimode_search_url + quote_plus(prompt)
         async with self.browser.acquire(self.name) as lease:
             page = lease.page
             try:
@@ -122,11 +120,13 @@ class GoogleAIModeProvider(BaseChatProvider):
         deadline = time.monotonic() + self.settings.response_timeout_s
         poll = self.settings.poll_interval_s
 
-        container = await self._container(page)
         last_text = ""
         stable_ticks = 0
         saw_text = False
+        container = None
         while time.monotonic() < deadline:
+            # Re-resolved each tick: AI Mode swaps the answer container as the
+            # page hydrates, so a handle taken once goes stale mid-answer.
             container = await self._container(page)
             try:
                 raw = await container.inner_text()

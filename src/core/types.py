@@ -28,16 +28,16 @@ class Attachment:
 
 @dataclass(slots=True)
 class ChatRequest:
-    """A normalised chat-completion request handed to a provider."""
+    """A normalised chat-completion request handed to a provider.
+
+    Deliberately narrow: it carries only what a browser-driven provider can act
+    on. Sampling controls (``temperature``, ``max_tokens``) are accepted at the
+    API boundary for OpenAI compatibility but stop there — a chat web UI exposes
+    no way to set them, so plumbing them further would only imply they work.
+    """
 
     messages: list[ChatMessage]
     model: str
-    # A stable identifier used to route repeated requests to the same browser
-    # conversation/tab (falls back to a fresh conversation when None).
-    conversation_id: str | None = None
-    temperature: float | None = None
-    max_tokens: int | None = None
-    stream: bool = False
     # Provider-specific capabilities, normalised from the OpenAI-compatible body.
     web_search: bool = False
     # Reasoning/"thinking" effort (OpenAI `reasoning_effort`). None = leave the
@@ -45,11 +45,3 @@ class ChatRequest:
     # with a thinking toggle (Perplexity) act on it.
     reasoning_effort: str | None = None
     attachments: list[Attachment] = field(default_factory=list)
-    extra: dict = field(default_factory=dict)
-
-    @property
-    def last_user_message(self) -> str:
-        for msg in reversed(self.messages):
-            if msg.role == "user":
-                return msg.content
-        return self.messages[-1].content if self.messages else ""

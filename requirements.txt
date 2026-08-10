@@ -1,12 +1,16 @@
-fastapi>=0.115
-uvicorn[standard]>=0.30
-pydantic>=2.7
-pydantic-settings>=2.3
-playwright>=1.45
-mcp>=1.9
-markdownify>=0.13
+# Upper bounds are deliberate. The Docker image resolves these fresh at build
+# time, so an unbounded requirement means an upstream major release can break a
+# deployment that changed nothing — `mcp>=1.9` let SDK 2.0 in, which removed the
+# `streamablehttp_client` alias and crash-looped the server on boot.
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+pydantic>=2.7,<3
+pydantic-settings>=2.3,<3
+playwright>=1.45,<2
+mcp>=1.9,<2
+markdownify>=0.13,<1
 
 # dev / test
-pytest>=8.2
-pytest-asyncio>=0.23
-httpx>=0.27
+pytest>=8.2,<9
+pytest-asyncio>=0.23,<2
+httpx>=0.27,<1

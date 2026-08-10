@@ -83,6 +83,9 @@ class Settings(BaseSettings):
 
     # ---- Provider-specific: ExpressAI -----------------------------------
     expressai_base_url: str = "https://app.expressai.com"
+    # ---- Provider-specific: Google AI Mode ------------------------------
+    # The prompt is URL-encoded and appended to this. `udm=50` selects AI Mode.
+    googleaimode_search_url: str = "https://www.google.com/search?udm=50&q="
     # ---- Provider-specific: Perplexity ----------------------------------
     perplexity_base_url: str = "https://www.perplexity.ai"
     # How long to wait (seconds) for a full model response before giving up.

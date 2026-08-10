@@ -19,11 +19,30 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import streamablehttp_client
-
 logger = logging.getLogger(__name__)
+
+# MCP is an optional enhancement, so a broken/absent SDK must degrade to "no MCP
+# tools" rather than take the whole API down — this module is imported from the
+# app factory, so an ImportError here used to crash the server on boot even for
+# deployments that never configured an MCP server. (SDK 2.0 dropped the
+# `streamablehttp_client` alias, which is exactly how that happened.)
+try:
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    try:
+        from mcp.client.streamable_http import streamable_http_client
+    except ImportError:  # SDK < 1.28 only had the unseparated spelling
+        from mcp.client.streamable_http import (
+            streamablehttp_client as streamable_http_client,
+        )
+
+    MCP_SDK_ERROR: str | None = None
+except ImportError as exc:  # pragma: no cover - depends on the installed SDK
+    ClientSession = StdioServerParameters = None  # type: ignore[assignment]
+    stdio_client = streamable_http_client = None  # type: ignore[assignment]
+    MCP_SDK_ERROR = str(exc)
+    logger.warning("MCP SDK unusable (%s); MCP tools are disabled", exc)
 
 SEP = "__"
 
@@ -78,6 +97,14 @@ class McpManager:
     async def startup(self) -> None:
         if not self._specs:
             return
+        if MCP_SDK_ERROR is not None:
+            logger.error(
+                "%d MCP server(s) configured but the SDK is unusable (%s); "
+                "continuing without MCP tools",
+                len(self._specs),
+                MCP_SDK_ERROR,
+            )
+            return
         # Streamable-HTTP servers that don't support server-initiated messages
         # (e.g. Parallel) make the client log a benign GET-stream 405 reconnect
         # loop; quiet that and the per-request httpx INFO chatter.
@@ -112,7 +139,7 @@ class McpManager:
             read, write = await stack.enter_async_context(stdio_client(params))
         elif spec.transport == "http":
             read, write, _ = await stack.enter_async_context(
-                streamablehttp_client(spec.url or "", headers=spec.headers)
+                streamable_http_client(spec.url or "", headers=spec.headers)
             )
         else:
             raise ValueError(f"Unknown MCP transport {spec.transport!r}")
