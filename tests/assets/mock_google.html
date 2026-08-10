@@ -1,0 +1,43 @@
+<!doctype html>
+<!--
+  Stand-in for Google Search's AI Mode result page.
+
+  Reproduces the three things GoogleAIModeProvider has to cope with:
+    1. the answer streams in progressively (so the settle detection is exercised),
+    2. it is preceded by an echo of the user's prompt ("You said:"),
+    3. it is followed by UI boilerplate ("AI can make mistakes ...").
+
+  The answer contains real markup (heading, list, bold, link) so the innerHTML ->
+  Markdown conversion is covered too, not just the plain-text pass.
+-->
+<meta charset="utf-8">
+<title>Mock AI Mode</title>
+<body>
+  <div data-subtree="aimc">
+    <div id="echo">You said: what is a pi</div>
+    <div id="answer"></div>
+    <div id="footer" hidden>AI can make mistakes. Check important info</div>
+  </div>
+
+  <script>
+    // Chunks appended on a timer to imitate a streaming answer. The final
+    // chunk reveals the footer, exactly as the real page does when it settles.
+    const CHUNKS = [
+      "<h3>Raspberry Pi</h3>",
+      "<p>A <b>small</b> single-board computer.</p>",
+      "<ul><li>Runs Linux</li>",
+      "<li>Has <a href='https://example.com/gpio'>GPIO</a> pins</li></ul>",
+    ];
+
+    const answer = document.getElementById("answer");
+    let i = 0;
+    const timer = setInterval(() => {
+      if (i >= CHUNKS.length) {
+        clearInterval(timer);
+        document.getElementById("footer").hidden = false;
+        return;
+      }
+      answer.insertAdjacentHTML("beforeend", CHUNKS[i++]);
+    }, 60);
+  </script>
+</body>

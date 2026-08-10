@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -24,7 +25,7 @@ from ..core.errors import ProviderError
 from ..core.messages import flatten_messages
 from ..core.tools import build_tools_preamble
 from ..core.types import ChatMessage, ChatRequest
-from ..providers import ProviderRouter
+from ..providers import BaseChatProvider, ProviderRouter
 from . import openai_format as fmt
 from . import responses_schemas as rs
 from .auth import require_api_key
@@ -84,7 +85,7 @@ async def create_response(
         )
 
     response_id = (
-        sessions.create(history, body.model).id if body.store else f"resp_{fmt.uuid.uuid4().hex}"
+        sessions.create(history, body.model).id if body.store else f"resp_{uuid.uuid4().hex}"
     )
     prompt = flatten_messages(history)
     response = rs.build_response(

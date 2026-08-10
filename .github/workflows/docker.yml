@@ -12,7 +12,32 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  # Gate the image on the test suite. Publishing first and testing never meant
+  # a build that could not even import the app still landed on :latest — which
+  # is exactly how an upstream SDK major crash-looped the deployment.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Chromium
+        run: playwright install --with-deps chromium
+
+      - name: Run tests
+        run: pytest -q
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
