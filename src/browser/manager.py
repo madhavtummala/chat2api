@@ -13,13 +13,10 @@ a chat UI can only process one in-flight turn per tab.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import os
-import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import AsyncIterator
 
 from playwright.async_api import (
     Browser,
@@ -31,28 +28,9 @@ from playwright.async_api import (
 
 from ..config import Settings
 from ..core.errors import ProviderUnavailable
+from . import cookies
 
 logger = logging.getLogger(__name__)
-
-# Keys Playwright accepts back in add_cookies(). Anything else it hands us
-# (partitionKey, and whatever a future version adds) is dropped on the way in.
-_COOKIE_KEYS = ("name", "value", "domain", "path", "expires", "httpOnly", "secure", "sameSite")
-
-
-def _pick(cookie: dict[str, Any]) -> dict[str, Any]:
-    """A cookie reduced to the fields Playwright round-trips."""
-    return {k: cookie[k] for k in _COOKIE_KEYS if k in cookie}
-
-
-def _identity(cookie: dict[str, Any]) -> tuple[str, str, str]:
-    """What makes two cookies the same cookie, per RFC 6265."""
-    return (cookie.get("name", ""), cookie.get("domain", ""), cookie.get("path", ""))
-
-
-def _has_expiry(cookie: dict[str, Any]) -> bool:
-    """Whether the browser will keep this cookie on its own. Session cookies
-    come back from Playwright as ``expires: -1``."""
-    return cookie.get("expires", -1) > 0
 
 
 class PageLease:
@@ -148,7 +126,7 @@ class BrowserManager:
                 args=launch_args,
             )
 
-        await self._restore_session_cookies()
+        await cookies.restore(self._context, self._settings)
         self._context.set_default_timeout(self._settings.nav_timeout_ms)
         # Chromium can die long after a clean start (OOM kill, renderer crash,
         # X server going away). Without this the manager would keep believing it
@@ -160,11 +138,12 @@ class BrowserManager:
         logger.info("Browser ready (tab pools created lazily per provider)")
 
     # -- session-cookie persistence ----------------------------------------
-    @property
-    def _cookie_file(self) -> Path:
-        return Path(self._settings.user_data_dir).resolve() / "session_cookies.json"
-
     def _start_cookie_saver(self) -> None:
+        """Snapshot session cookies on a timer (see :mod:`.cookies`).
+
+        stop() saves them too, but the shutdowns that actually happen here are
+        OOM kills and `docker kill`, which never reach it.
+        """
         interval = self._settings.session_cookie_save_interval_s
         if not self._settings.persist_session_cookies or interval <= 0:
             return
@@ -181,61 +160,8 @@ class BrowserManager:
         self._cookie_task = asyncio.create_task(_loop())
 
     async def _save_session_cookies(self) -> None:
-        """Snapshot the context's session cookies (best-effort, never raises).
-
-        Only cookies *without* an expiry are saved: everything else is already
-        durable in the profile, and re-adding a stale copy of a rotating token
-        would be actively harmful.
-        """
-        if not self._settings.persist_session_cookies or self._context is None:
-            return
-        try:
-            cookies = [c for c in await self._context.cookies() if not _has_expiry(c)]
-            path = self._cookie_file
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(".json.tmp")
-            # These are live credentials: write them user-only, and swap them in
-            # atomically so a crash mid-write can't leave a truncated file.
-            tmp.write_text(json.dumps([_pick(c) for c in cookies], indent=2))
-            os.chmod(tmp, 0o600)
-            tmp.replace(path)
-            logger.debug("Saved %d session cookie(s) to %s", len(cookies), path)
-        except Exception:  # noqa: BLE001 - persistence is never worth failing over
-            logger.warning("Could not save session cookies", exc_info=True)
-
-    async def _restore_session_cookies(self) -> None:
-        """Re-add saved session cookies to a fresh context (best-effort).
-
-        They come back with a real expiry, since a cookie re-added as a session
-        cookie would be dropped again by the next restart. A cookie the profile
-        already carries is left alone — the live one is by definition fresher
-        than our snapshot.
-        """
-        if not self._settings.persist_session_cookies or self._context is None:
-            return
-        try:
-            raw = self._cookie_file.read_text()
-        except FileNotFoundError:
-            return
-        except OSError:
-            logger.warning("Could not read saved session cookies", exc_info=True)
-            return
-        try:
-            saved = json.loads(raw)
-            existing = {_identity(c) for c in await self._context.cookies()}
-            expires = time.time() + self._settings.session_cookie_ttl_days * 86_400
-            restore = [
-                {**_pick(c), "expires": expires}
-                for c in saved
-                if _identity(c) not in existing
-            ]
-            if restore:
-                await self._context.add_cookies(restore)
-            logger.info(
-                "Restored %d/%d saved session cookie(s)", len(restore), len(saved)
-            )
-        except Exception:  # noqa: BLE001 - a bad snapshot must not block startup
-            logger.warning("Could not restore session cookies", exc_info=True)
+        if self._context is not None:
+            await cookies.save(self._context, self._settings)
 
     def _on_context_lost(self, _context: BrowserContext) -> None:
         """Handle an *unexpected* context close. Synchronous by necessity.

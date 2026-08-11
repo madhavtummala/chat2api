@@ -11,12 +11,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..core.errors import AuthenticationRequired, ProviderError, ProviderTimeout
 from ..core.messages import flatten_messages
-from ..core.tools import (
-    TextEvent,
-    ToolCallEvent,
-    ToolCallParser,
-    build_tools_preamble,
-)
+from ..core.tools import ToolCallEvent, build_tools_preamble
 from ..core.types import ChatMessage, ChatRequest
 from ..providers import (
     BaseChatProvider,
@@ -27,7 +22,7 @@ from ..providers import (
 from . import openai_format as fmt
 from .auth import require_api_key
 from .schemas import ChatCompletionRequest, ModelCard, ModelList
-from .tool_runtime import collect
+from .tool_runtime import collect, parse_events, resolve_tools
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -248,22 +243,11 @@ async def chat_completions(
     provider, model, pinned = resolve_provider(provider_router, body.resolve_model())
     if pinned:
         validate_model(provider, model)
-    # Tools come from the client (function tools) plus any configured MCP
-    # servers. Chat Completions delegates execution: parsed calls are returned
-    # to the client (which owns/executes them), so we only list + inject here.
-    # A client that explicitly sends tools to a provider that can't emit tool
-    # calls is an error; but globally-configured MCP tools are best-effort — we
-    # simply skip them for such providers so the provider (e.g. Perplexity, with
-    # its own native search) still answers normally.
-    client_tools = [t.model_dump() for t in body.tools or []]
-    if client_tools and not provider.supports_tools:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Provider {provider.name!r} does not support tool calls.",
-        )
-    mcp_tools = mcp.openai_tools() if mcp and mcp.has_tools and provider.supports_tools else []
-    tool_defs = client_tools + mcp_tools
-    use_tools = bool(tool_defs) and body.tool_choice != "none"
+    # Chat Completions delegates tool *execution*: parsed calls are returned to
+    # the client (which owns and runs them), so we only list + inject here.
+    tool_defs, use_tools, required = resolve_tools(
+        provider, mcp, [t.model_dump() for t in body.tools or []], body.tool_choice
+    )
 
     chat_request = body.to_chat_request()
     chat_request.model = model  # the validated, resolved model the provider selects
@@ -275,7 +259,6 @@ async def chat_completions(
     if chat_request.web_search and not provider.supports_web_search:
         chat_request.web_search = False  # soft-ignore an unsupported enhancement
     if use_tools:
-        required = body.tool_choice == "required" or isinstance(body.tool_choice, dict)
         chat_request.messages.insert(
             0,
             ChatMessage(role="system", content=build_tools_preamble(tool_defs, required)),
@@ -291,7 +274,7 @@ async def chat_completions(
         return StreamingResponse(
             _stream(attempts, chat_request, completion_id, model, use_tools, served),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            headers=fmt.SSE_HEADERS,
         )
 
     try:
@@ -299,7 +282,7 @@ async def chat_completions(
             generate_with_failover(attempts, chat_request, served), use_tools
         )
     except ProviderError as exc:
-        return _provider_error(exc)
+        return provider_error_response(exc)
 
     prompt = flatten_messages(chat_request.messages)
     return JSONResponse(
@@ -318,45 +301,31 @@ async def _stream(
     served: Served,
 ) -> AsyncIterator[str]:
     yield fmt.sse(fmt.chunk(completion_id, model, delta={"role": "assistant"}))
-    parser = ToolCallParser() if use_tools else None
     tool_index = 0
     saw_tool_call = False
 
-    def render(event) -> str | None:
-        nonlocal tool_index, saw_tool_call
-        served_model = served.label(model)
-        if isinstance(event, ToolCallEvent):
-            saw_tool_call = True
-            delta = fmt.tool_call_delta(
-                tool_index, fmt.new_tool_call_id(), event.name, event.arguments
-            )
-            tool_index += 1
-            return fmt.sse(fmt.chunk(completion_id, served_model, delta=delta))
-        if isinstance(event, TextEvent) and event.text:
-            return fmt.sse(
-                fmt.chunk(completion_id, served_model, delta={"content": event.text})
-            )
-        return None
-
     try:
-        async for delta in generate_with_failover(attempts, chat_request, served):
-            if parser is None:
-                if delta:
-                    yield fmt.sse(
-                        fmt.chunk(
-                            completion_id, served.label(model), delta={"content": delta}
-                        )
+        deltas = generate_with_failover(attempts, chat_request, served)
+        async for event in parse_events(deltas, use_tools):
+            # Resolved per event, not once: which backend answered is only known
+            # after the first delta arrives (see Served).
+            served_model = served.label(model)
+            if isinstance(event, ToolCallEvent):
+                saw_tool_call = True
+                yield fmt.sse(
+                    fmt.chunk(
+                        completion_id,
+                        served_model,
+                        delta=fmt.tool_call_delta(
+                            tool_index, fmt.new_tool_call_id(), event.name, event.arguments
+                        ),
                     )
-                continue
-            for event in parser.feed(delta):
-                out = render(event)
-                if out:
-                    yield out
-        if parser is not None:
-            for event in parser.finish():
-                out = render(event)
-                if out:
-                    yield out
+                )
+                tool_index += 1
+            elif event.text:
+                yield fmt.sse(
+                    fmt.chunk(completion_id, served_model, delta={"content": event.text})
+                )
     except ProviderError as exc:
         logger.warning("Provider error during stream: %s", exc)
         yield fmt.sse(fmt.error_payload(str(exc), exc.error_type, exc.status_code))
@@ -377,7 +346,8 @@ async def _stream(
     yield fmt.SSE_DONE
 
 
-def _provider_error(exc: ProviderError) -> JSONResponse:
+def provider_error_response(exc: ProviderError) -> JSONResponse:
+    """A provider failure as an OpenAI-shaped error body (shared by both APIs)."""
     return JSONResponse(
         status_code=exc.status_code,
         content=fmt.error_payload(str(exc), exc.error_type, exc.status_code),

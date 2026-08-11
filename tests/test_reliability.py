@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.api.routes import router
+from src.browser import cookies
 from src.browser.manager import BrowserManager
 from src.config import Settings
 from src.core.errors import (
@@ -333,21 +334,19 @@ def cookie(name, domain="app.expressai.com", expires=-1, path="/"):
     }
 
 
-def manager_at(tmp_path, context, **overrides):
-    manager = BrowserManager(Settings(user_data_dir=str(tmp_path), **overrides))
-    manager._context = context
-    return manager
+def config_at(tmp_path, **overrides):
+    return Settings(user_data_dir=str(tmp_path), **overrides)
 
 
 async def test_session_cookies_survive_a_restart_with_a_real_expiry(tmp_path):
     # Chromium drops these on close, so a login is lost unless we save them.
-    before = manager_at(tmp_path, FakeContext([cookie("KEYCLOAK_IDENTITY")]))
-    await before._save_session_cookies()
+    config = config_at(tmp_path)
+    await cookies.save(FakeContext([cookie("KEYCLOAK_IDENTITY")]), config)
 
-    after = manager_at(tmp_path, FakeContext())
-    await after._restore_session_cookies()
+    after = FakeContext()
+    await cookies.restore(after, config)
 
-    (restored,) = after._context.added
+    (restored,) = after.added
     assert restored["name"] == "KEYCLOAK_IDENTITY"
     # Re-adding it as a session cookie would just lose it again next restart.
     assert restored["expires"] > time.time()
@@ -357,44 +356,42 @@ async def test_session_cookies_survive_a_restart_with_a_real_expiry(tmp_path):
 async def test_only_session_cookies_are_snapshotted(tmp_path):
     # A cookie with an expiry is already durable in the profile; re-adding our
     # stale copy of a rotating token would be worse than doing nothing.
-    manager = manager_at(
-        tmp_path,
-        FakeContext([cookie("bff_session", expires=time.time() + 600), cookie("SSO")]),
+    context = FakeContext(
+        [cookie("bff_session", expires=time.time() + 600), cookie("SSO")]
     )
-    await manager._save_session_cookies()
+    await cookies.save(context, config_at(tmp_path))
 
     saved = json.loads((tmp_path / "session_cookies.json").read_text())
     assert [c["name"] for c in saved] == ["SSO"]
 
 
 async def test_restore_never_overwrites_a_live_cookie(tmp_path):
-    before = manager_at(tmp_path, FakeContext([cookie("SSO")]))
-    await before._save_session_cookies()
+    config = config_at(tmp_path)
+    await cookies.save(FakeContext([cookie("SSO")]), config)
 
-    live = cookie("SSO", expires=time.time() + 600)
-    after = manager_at(tmp_path, FakeContext([live]))
-    await after._restore_session_cookies()
+    after = FakeContext([cookie("SSO", expires=time.time() + 600)])
+    await cookies.restore(after, config)
 
-    assert after._context.added == []  # the profile's copy is fresher than ours
+    assert after.added == []  # the profile's copy is fresher than our snapshot
 
 
 async def test_missing_snapshot_is_not_an_error(tmp_path):
-    manager = manager_at(tmp_path, FakeContext())
-    await manager._restore_session_cookies()  # first ever boot
-    assert manager._context.added == []
+    context = FakeContext()
+    await cookies.restore(context, config_at(tmp_path))  # first ever boot
+    assert context.added == []
 
 
 async def test_persistence_can_be_switched_off(tmp_path):
-    manager = manager_at(tmp_path, FakeContext([cookie("SSO")]), persist_session_cookies=False)
-    await manager._save_session_cookies()
+    config = config_at(tmp_path, persist_session_cookies=False)
+    await cookies.save(FakeContext([cookie("SSO")]), config)
     assert not (tmp_path / "session_cookies.json").exists()
 
 
 async def test_a_corrupt_snapshot_does_not_block_startup(tmp_path):
     (tmp_path / "session_cookies.json").write_text("{ not json")
-    manager = manager_at(tmp_path, FakeContext())
-    await manager._restore_session_cookies()
-    assert manager._context.added == []
+    context = FakeContext()
+    await cookies.restore(context, config_at(tmp_path))
+    assert context.added == []
 
 
 # -- startup policy ------------------------------------------------------
