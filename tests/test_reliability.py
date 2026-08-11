@@ -1,6 +1,8 @@
 """Availability behaviour: provider failover, health reporting, browser recovery."""
 
 import asyncio
+import json
+import time
 
 import pytest
 from fastapi import FastAPI
@@ -297,6 +299,102 @@ def test_expected_close_during_stop_is_ignored():
     manager._pools["p"] = asyncio.Queue()
     manager._on_context_lost(object())
     assert manager._pools  # untouched; stop() owns the teardown
+
+
+# -- session-cookie persistence ------------------------------------------
+
+
+class FakeContext:
+    """Just enough BrowserContext to exercise cookie save/restore."""
+
+    def __init__(self, cookies=()):
+        self._cookies = list(cookies)
+        self.added = []
+
+    async def cookies(self):
+        return list(self._cookies)
+
+    async def add_cookies(self, cookies):
+        self.added.extend(cookies)
+        self._cookies.extend(cookies)
+
+
+def cookie(name, domain="app.expressai.com", expires=-1, path="/"):
+    return {
+        "name": name,
+        "value": "v",
+        "domain": domain,
+        "path": path,
+        "expires": expires,
+        "httpOnly": True,
+        "secure": True,
+        "sameSite": "Lax",
+        "partitionKey": None,  # Playwright extra we must not echo back
+    }
+
+
+def manager_at(tmp_path, context, **overrides):
+    manager = BrowserManager(Settings(user_data_dir=str(tmp_path), **overrides))
+    manager._context = context
+    return manager
+
+
+async def test_session_cookies_survive_a_restart_with_a_real_expiry(tmp_path):
+    # Chromium drops these on close, so a login is lost unless we save them.
+    before = manager_at(tmp_path, FakeContext([cookie("KEYCLOAK_IDENTITY")]))
+    await before._save_session_cookies()
+
+    after = manager_at(tmp_path, FakeContext())
+    await after._restore_session_cookies()
+
+    (restored,) = after._context.added
+    assert restored["name"] == "KEYCLOAK_IDENTITY"
+    # Re-adding it as a session cookie would just lose it again next restart.
+    assert restored["expires"] > time.time()
+    assert "partitionKey" not in restored
+
+
+async def test_only_session_cookies_are_snapshotted(tmp_path):
+    # A cookie with an expiry is already durable in the profile; re-adding our
+    # stale copy of a rotating token would be worse than doing nothing.
+    manager = manager_at(
+        tmp_path,
+        FakeContext([cookie("bff_session", expires=time.time() + 600), cookie("SSO")]),
+    )
+    await manager._save_session_cookies()
+
+    saved = json.loads((tmp_path / "session_cookies.json").read_text())
+    assert [c["name"] for c in saved] == ["SSO"]
+
+
+async def test_restore_never_overwrites_a_live_cookie(tmp_path):
+    before = manager_at(tmp_path, FakeContext([cookie("SSO")]))
+    await before._save_session_cookies()
+
+    live = cookie("SSO", expires=time.time() + 600)
+    after = manager_at(tmp_path, FakeContext([live]))
+    await after._restore_session_cookies()
+
+    assert after._context.added == []  # the profile's copy is fresher than ours
+
+
+async def test_missing_snapshot_is_not_an_error(tmp_path):
+    manager = manager_at(tmp_path, FakeContext())
+    await manager._restore_session_cookies()  # first ever boot
+    assert manager._context.added == []
+
+
+async def test_persistence_can_be_switched_off(tmp_path):
+    manager = manager_at(tmp_path, FakeContext([cookie("SSO")]), persist_session_cookies=False)
+    await manager._save_session_cookies()
+    assert not (tmp_path / "session_cookies.json").exists()
+
+
+async def test_a_corrupt_snapshot_does_not_block_startup(tmp_path):
+    (tmp_path / "session_cookies.json").write_text("{ not json")
+    manager = manager_at(tmp_path, FakeContext())
+    await manager._restore_session_cookies()
+    assert manager._context.added == []
 
 
 # -- startup policy ------------------------------------------------------

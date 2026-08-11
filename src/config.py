@@ -55,6 +55,23 @@ class Settings(BaseSettings):
     # Optional Playwright storage_state JSON path (alternative to user_data_dir
     # for injecting an already-authenticated session).
     storage_state: str | None = None
+    # Chromium discards *session* cookies (the ones with no expiry) when it
+    # closes, and some sites keep their SSO identity there — ExpressAI's login
+    # is a 7-day `bff_session` that can only be renewed silently while the
+    # ExpressVPN Keycloak session cookies are still around. Losing those on
+    # every restart turns a routine renewal into a manual noVNC login. Saving
+    # them out and re-adding them with a real expiry on launch is what keeps a
+    # login alive between restarts.
+    persist_session_cookies: bool = True
+    # Lifetime given to a restored session cookie. Not a security boundary — the
+    # site's own token expiry still governs; this only stops us from re-adding a
+    # cookie that has been dead for months.
+    session_cookie_ttl_days: float = Field(default=60.0, gt=0)
+    # How often to snapshot session cookies while running. A clean shutdown
+    # saves them anyway, but an OOM kill or `docker kill` never runs it, so the
+    # periodic snapshot is what survives the failure modes that actually happen.
+    # 0 disables the timer (shutdown save only).
+    session_cookie_save_interval_s: float = Field(default=300.0, ge=0)
     # Maximum number of concurrent browser tabs used to serve requests.
     max_concurrency: int = Field(default=2, ge=1)
     # Recycle a pooled tab after this many uses to shed accumulated memory/DOM
