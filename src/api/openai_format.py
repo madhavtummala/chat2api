@@ -79,6 +79,10 @@ def sse(data: dict) -> str:
 
 SSE_DONE = "data: [DONE]\n\n"
 
+#: Response headers every SSE endpoint sets. ``X-Accel-Buffering`` stops nginx
+#: (and friends) from buffering the stream into one late blob.
+SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
 
 def error_payload(message: str, err_type: str, status_code: int) -> dict:
     return {

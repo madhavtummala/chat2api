@@ -29,8 +29,14 @@ from ..providers import BaseChatProvider, ProviderRouter
 from . import openai_format as fmt
 from . import responses_schemas as rs
 from .auth import require_api_key
-from .routes import get_mcp, get_router, resolve_provider, validate_model
-from .tool_runtime import collect
+from .routes import (
+    get_mcp,
+    get_router,
+    provider_error_response,
+    resolve_provider,
+    validate_model,
+)
+from .tool_runtime import collect, resolve_tools
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -62,27 +68,16 @@ async def create_response(
         history.append(ChatMessage(role="system", content=body.instructions))
     history.extend(body.input_messages())
 
-    # Client-supplied function tools require tool support; server-configured MCP
-    # tools are best-effort and skipped for providers that can't emit tool calls
-    # (so e.g. Perplexity still answers with its own native search).
-    client_tools = body.function_tools()
-    if client_tools and not provider.supports_tools:
-        raise HTTPException(
-            400, f"Provider {provider.name!r} does not support tool calls."
-        )
-    tool_defs = client_tools + (
-        mcp.openai_tools() if mcp and mcp.has_tools and provider.supports_tools else []
+    tool_defs, use_tools, required = resolve_tools(
+        provider, mcp, body.function_tools(), body.tool_choice
     )
 
     try:
         output_items, output_text, status = await _run_loop(
-            provider, mcp, history, tool_defs, body
+            provider, mcp, history, tool_defs, use_tools, required, body
         )
     except ProviderError as exc:
-        return JSONResponse(
-            status_code=exc.status_code,
-            content=fmt.error_payload(str(exc), exc.error_type, exc.status_code),
-        )
+        return provider_error_response(exc)
 
     response_id = (
         sessions.create(history, body.model).id if body.store else f"resp_{uuid.uuid4().hex}"
@@ -97,7 +92,7 @@ async def create_response(
         return StreamingResponse(
             _stream_response(response, output_text),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            headers=fmt.SSE_HEADERS,
         )
     return JSONResponse(response)
 
@@ -119,6 +114,8 @@ async def _run_loop(
     mcp,
     history: list[ChatMessage],
     tool_defs: list[dict],
+    use_tools: bool,
+    required: bool,
     body: rs.ResponsesRequest,
 ) -> tuple[list[dict], str, str]:
     """Drive model<->tool turns until a final answer (or a client-side tool).
@@ -129,8 +126,6 @@ async def _run_loop(
     context supplies the rest. Stateless providers re-send the whole transcript
     every turn instead.
     """
-    use_tools = bool(tool_defs) and body.tool_choice != "none"
-    required = body.tool_choice == "required" or isinstance(body.tool_choice, dict)
     output_items: list[dict] = []
     final_text = ""
 

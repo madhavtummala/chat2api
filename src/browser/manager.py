@@ -28,6 +28,7 @@ from playwright.async_api import (
 
 from ..config import Settings
 from ..core.errors import ProviderUnavailable
+from . import cookies
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ class BrowserManager:
         self._uses: dict[Page, int] = {}
         self._replace_tasks: set[asyncio.Task] = set()
         self._teardown_tasks: set[asyncio.Task] = set()
+        self._cookie_task: asyncio.Task | None = None
         self._started = False
         self._closing = False  # True only during an intentional stop()
         self._start_failed = False
@@ -124,6 +126,7 @@ class BrowserManager:
                 args=launch_args,
             )
 
+        await cookies.restore(self._context, self._settings)
         self._context.set_default_timeout(self._settings.nav_timeout_ms)
         # Chromium can die long after a clean start (OOM kill, renderer crash,
         # X server going away). Without this the manager would keep believing it
@@ -131,7 +134,34 @@ class BrowserManager:
         # the next acquire()/watchdog tick relaunches from scratch.
         self._context.on("close", self._on_context_lost)
         self._started = True
+        self._start_cookie_saver()
         logger.info("Browser ready (tab pools created lazily per provider)")
+
+    # -- session-cookie persistence ----------------------------------------
+    def _start_cookie_saver(self) -> None:
+        """Snapshot session cookies on a timer (see :mod:`.cookies`).
+
+        stop() saves them too, but the shutdowns that actually happen here are
+        OOM kills and `docker kill`, which never reach it.
+        """
+        interval = self._settings.session_cookie_save_interval_s
+        if not self._settings.persist_session_cookies or interval <= 0:
+            return
+        if self._cookie_task is not None and not self._cookie_task.done():
+            return
+
+        async def _loop() -> None:
+            while True:
+                await asyncio.sleep(interval)
+                if not self.is_alive:
+                    return  # a relaunch starts its own saver
+                await self._save_session_cookies()
+
+        self._cookie_task = asyncio.create_task(_loop())
+
+    async def _save_session_cookies(self) -> None:
+        if self._context is not None:
+            await cookies.save(self._context, self._settings)
 
     def _on_context_lost(self, _context: BrowserContext) -> None:
         """Handle an *unexpected* context close. Synchronous by necessity.
@@ -155,6 +185,10 @@ class BrowserManager:
         for task in self._replace_tasks:
             task.cancel()
         self._replace_tasks.clear()
+        if self._cookie_task is not None:
+            # Its context is gone; the relaunch installs a fresh saver.
+            self._cookie_task.cancel()
+            self._cookie_task = None
         if stale_playwright is not None or stale_browser is not None:
             self._spawn_teardown(stale_playwright, stale_browser)
 
@@ -197,6 +231,9 @@ class BrowserManager:
                 return
             logger.info("Shutting down browser")
             self._closing = True  # this close is expected; don't trip the watchdog
+            # Last chance to capture session cookies: closing the context is
+            # exactly the event that destroys them.
+            await self._save_session_cookies()
             try:
                 if self._context:
                     await self._context.close()
@@ -205,6 +242,9 @@ class BrowserManager:
                 if self._playwright:
                     await self._playwright.stop()
             finally:
+                if self._cookie_task is not None:
+                    self._cookie_task.cancel()
+                    self._cookie_task = None
                 for task in (*self._replace_tasks, *self._teardown_tasks):
                     task.cancel()
                 self._replace_tasks.clear()
