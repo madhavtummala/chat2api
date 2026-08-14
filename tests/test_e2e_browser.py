@@ -326,3 +326,67 @@ async def test_pool_survives_request_cancellation(stack):
     async with browser.acquire() as lease:
         assert not lease.page.is_closed()
     assert len(browser._pool_pages["default"]) == settings.max_concurrency
+
+
+# -- the real ExpressVPN sign-in form -------------------------------------
+KC_USERNAME_URL = (Path(__file__).parent / "assets" / "mock_kc_username.html").resolve().as_uri()
+KC_OTP_URL = (Path(__file__).parent / "assets" / "mock_kc_otp.html").resolve().as_uri()
+
+
+@pytest.mark.asyncio
+async def test_login_flow_selectors_resolve_against_real_markup(tmp_path):
+    """Every LoginFlow selector must hit exactly one visible element.
+
+    The mock assets are trimmed copies of the live Keycloak templates. Auto-login
+    runs unattended at 3am, so a selector that silently matches nothing is the
+    single most likely way this breaks — and the hardest to notice.
+    """
+    from playwright.async_api import async_playwright
+
+    from src.providers.expressai import _LOGIN_FLOW, _SELECTORS
+
+    pages = {
+        LOGIN_URL: [
+            ("login_marker", _SELECTORS.login_marker),
+            ("start_button", _LOGIN_FLOW.start_button),
+        ],
+        KC_USERNAME_URL: [
+            ("email_input", _LOGIN_FLOW.email_input),
+            ("email_submit", _LOGIN_FLOW.email_submit),
+        ],
+        KC_OTP_URL: [
+            ("otp_input", _LOGIN_FLOW.otp_input),
+            ("otp_submit", _LOGIN_FLOW.otp_submit),
+        ],
+    }
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch()
+        page = await browser.new_page()
+        try:
+            for url, checks in pages.items():
+                await page.goto(url)
+                for label, selector in checks:
+                    locator = page.locator(selector)
+                    count = await locator.count()
+                    assert count >= 1, f"{label}: {selector!r} matched nothing"
+                    assert await locator.first.is_visible(), f"{label}: {selector!r} is hidden"
+                    if label == "start_button":
+                        # The page has a sidebar sign-in button too; scoping to
+                        # <header> must pin exactly one, or `.first` is a coin toss.
+                        assert count == 1, f"start_button matched {count} elements, want 1"
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_expressai_login_is_passwordless():
+    """ExpressVPN's Keycloak asks for an email then an emailed code — no password.
+
+    Declaring a password_input would make AutoLogin demand a credential that
+    does not exist, and fail every login on a step the site never shows.
+    """
+    from src.providers.expressai import _LOGIN_FLOW
+
+    assert _LOGIN_FLOW.password_input == ""
+    assert _LOGIN_FLOW.password_submit == ""
+    assert _LOGIN_FLOW.otp_input == "#otp"

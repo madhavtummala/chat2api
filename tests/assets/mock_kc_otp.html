@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html><body>
+<!--
+  Mirrors ExpressVPN Keycloak's `otp-form.ftl`, trimmed to what the LoginFlow
+  addresses. The "Continue" submit carries no id of its own, hence the
+  `#kc-otp-login-form button[type='submit']` selector.
+-->
+<div id="root"><main>
+<h2 class="h2">Verification Needed</h2>
+<div id="kc-info"><p>To sign in, please enter the verification code sent to you@example.com.</p></div>
+<form id="kc-otp-login-form" action="#" method="post"><div class="md:gap-30 flex flex-col gap-20">
+<div><div class="relative">
+<input class="peer" type="text" aria-invalid="false" id="otp" name="otp">
+<label for="otp">Verification Code</label>
+</div></div>
+<button class="inline-flex" type="submit" aria-busy="false">Continue</button>
+<div><a href="#">Get another code</a><a id="reset-login" href="#">Restart login</a></div>
+</div></form></main></div></body></html>

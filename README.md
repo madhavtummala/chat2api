@@ -67,6 +67,7 @@ Full walkthrough in [Providers → Adding a provider](docs/providers.md#adding-a
 - **[Deployment](docs/deployment.md)** — install, Docker, login flows, config reference.
 - **[API](docs/api.md)** — endpoints, model routing, tool calls & MCP, capabilities.
 - **[Providers](docs/providers.md)** — built-in backends, adding & tuning your own.
+- **[Auto-login](docs/auto-login.md)** — renewing an expired session unattended, incl. emailed 2FA codes.
 
 ## Tests
 

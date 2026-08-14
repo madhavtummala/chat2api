@@ -55,13 +55,13 @@ class Settings(BaseSettings):
     # Optional Playwright storage_state JSON path (alternative to user_data_dir
     # for injecting an already-authenticated session).
     storage_state: str | None = None
-    # Chromium discards *session* cookies (the ones with no expiry) when it
-    # closes, and some sites keep their SSO identity there — ExpressAI's login
-    # is a 7-day `bff_session` that can only be renewed silently while the
-    # ExpressVPN Keycloak session cookies are still around. Losing those on
-    # every restart turns a routine renewal into a manual noVNC login. Saving
-    # them out and re-adding them with a real expiry on launch is what keeps a
-    # login alive between restarts.
+    # Chromium keeps *session* cookies (the ones with no expiry) in memory only
+    # and discards them on close, and some sites keep their SSO identity there —
+    # ExpressAI's `bff_session` is a persistent 7-day cookie, but it can only be
+    # renewed silently while the ExpressVPN Keycloak session cookies are still
+    # around. Losing those on every restart turns a routine renewal into a
+    # re-login. Saving them out and re-adding them with a real expiry on launch
+    # is what keeps a login alive between restarts.
     persist_session_cookies: bool = True
     # Lifetime given to a restored session cookie. Not a security boundary — the
     # site's own token expiry still governs; this only stops us from re-adding a
@@ -94,8 +94,59 @@ class Settings(BaseSettings):
     # provider via a `provider/model` prefix.
     enable_failover: bool = True
 
+    # ---- Unattended re-authentication -----------------------------------
+    # Drive a provider's sign-in form when its session expires, instead of
+    # requiring a human at the noVNC session. Off by default: it needs stored
+    # credentials and a mailbox to read one-time codes from.
+    auto_login: bool = False
+    # Where one-time codes are read from: "gmail", or empty to disable. A
+    # provider whose login demands a code cannot auto-login without this.
+    otp_source: str = ""
+    # OAuth client + refresh token for the mailbox. Mint with
+    # `python scripts/gmail_oauth.py`. NOTE: the token grants read access to the
+    # *whole* mailbox — the label below narrows our query, not the token's
+    # power — so point this at a dedicated account that receives only forwarded
+    # one-time codes. See docs/auto-login.md.
+    gmail_client_id: str = ""
+    gmail_client_secret: str = ""
+    gmail_refresh_token: str = ""
+    # Optional mailbox label to narrow the search to. Empty (the default) is
+    # right for everyone who hasn't deliberately created one: the provider
+    # already restricts the query to its own sender, so a label adds nothing —
+    # and a label that doesn't exist matches no mail at all, surfacing as a
+    # baffling "no one-time code arrived".
+    gmail_otp_label: str = ""
+    # Fallback code regex for a provider whose LoginFlow doesn't specify one.
+    # The sender and the per-provider pattern live on the provider's LoginFlow,
+    # not here — they describe one site, exactly like its CSS selectors, and two
+    # providers needing auto-login would otherwise collide over one setting.
+    # Override per provider with CHAT2API_<PROVIDER>_OTP_FROM / _OTP_PATTERN.
+    otp_code_pattern: str = r"(?i)code\D{0,20}(\d{4,8})"
+    # How long to wait for the code mail to arrive after the form is submitted.
+    otp_wait_timeout_s: float = Field(default=120.0, gt=0)
+    # Delay between mailbox polls (grows up to 4x while waiting).
+    otp_poll_interval_s: float = Field(default=3.0, gt=0)
+    otp_http_timeout_s: float = Field(default=30.0, gt=0)
+    # Per-step element wait during login. Deliberately shorter than
+    # nav_timeout_ms: most steps are optional, and a missing one should be
+    # skipped promptly rather than stalling the whole login.
+    login_step_timeout_ms: int = Field(default=10_000, gt=0)
+    # How long to refuse further auto-login attempts after one fails. Each
+    # attempt spends a single-use code and counts against the provider's
+    # rate limit, so a broken login must not be retried per request.
+    login_retry_cooldown_s: float = Field(default=900.0, ge=0)
+
     # ---- Provider-specific: ExpressAI -----------------------------------
     expressai_base_url: str = "https://app.expressai.com"
+    # Account email for auto-login (unused unless CHAT2API_AUTO_LOGIN=true).
+    expressai_email: str = ""
+    # Unused by the default flow: ExpressVPN's Keycloak signs in with an email
+    # and an emailed code. Kept for its alternative password route.
+    expressai_password: str = ""
+    # Optional overrides for the code mail, if ExpressVPN ever changes them.
+    # Empty means "use what providers/expressai.py declares".
+    expressai_otp_from: str = ""
+    expressai_otp_pattern: str = ""
     # ---- Provider-specific: Google AI Mode ------------------------------
     # The prompt is URL-encoded and appended to this. `udm=50` selects AI Mode.
     googleaimode_search_url: str = "https://www.google.com/search?udm=50&q="
