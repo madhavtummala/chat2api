@@ -59,6 +59,10 @@ curl http://<host>:9000/health                 # look for "authenticated": false
 # /health flips to "authenticated": true — no restart needed
 ```
 
+ExpressAI's session only lasts 24h, so this is a daily chore unless you enable
+[auto-login](auto-login.md), which drives the sign-in form and reads the emailed
+one-time code from a mailbox.
+
 Because it's a persistent profile, refreshed cookies are saved back, so the
 session lasts as long as the site allows. If it ever expires, just VNC in and log
 in again — no restart, no extra container. Tip: if the server is live and serving
@@ -149,3 +153,12 @@ All settings use the `CHAT2API_` env prefix (optionally via a `.env` file).
 | `ENABLE_FAILOVER` | `true` | Retry a failed request on another provider (unpinned models only) |
 | `EXPRESSAI_BASE_URL` | `https://app.expressai.com` | ExpressAI site URL |
 | `PERPLEXITY_BASE_URL` | `https://www.perplexity.ai` | Perplexity site URL |
+| `AUTO_LOGIN` | `false` | Re-authenticate expired sessions unattended ([docs](auto-login.md)) |
+| `OTP_SOURCE` | *(empty)* | Where emailed one-time codes are read from (`gmail`) |
+| `GMAIL_CLIENT_ID` / `_SECRET` / `_REFRESH_TOKEN` | *(empty)* | OAuth credentials for the OTP mailbox |
+| `GMAIL_OTP_LABEL` | *(empty)* | Optional extra mailbox label to narrow to |
+| `OTP_CODE_PATTERN` | `(?i)code\D{0,20}(\d{4,8})` | Fallback regex for a provider declaring none |
+| `<PROVIDER>_OTP_FROM` / `_OTP_PATTERN` | *(empty)* | Override what the provider declares about its code mail |
+| `OTP_WAIT_TIMEOUT_S` | `120` | Max wait for the code mail to arrive |
+| `LOGIN_RETRY_COOLDOWN_S` | `900` | Refuse further logins this long after one fails |
+| `EXPRESSAI_EMAIL` | *(empty)* | Account email for auto-login (sign-in is passwordless) |

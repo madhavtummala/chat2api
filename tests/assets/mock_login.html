@@ -3,13 +3,41 @@
 <head><meta charset="utf-8" /><title>ExpressAI — Mock (logged out)</title></head>
 <body>
   <!--
-    Mirrors app.expressai.com's LOGGED-OUT screen so the ExpressAI provider's
-    login_marker matches: a disabled composer whose placeholder asks you to sign
-    in, plus the "Sign in with ExpressVPN" button. Crucially there is no
-    `textarea[placeholder="Ask anything"]` (the ready_marker), so readiness never
-    resolves and logout is detected.
+    Mirrors app.expressai.com's LOGGED-OUT screen, trimmed to the elements the
+    ExpressAI provider addresses.
+
+    Two things it must keep faithful:
+
+    1. No `textarea[placeholder="Ask anything"]` (the ready_marker), so readiness
+       never resolves and logout is detected. The composer is present but
+       disabled, with a placeholder that asks you to sign in.
+    2. **Two** "Sign in with ExpressVPN" buttons — one in the sidebar, one in the
+       header — exactly as the live page has. LoginFlow.start_button scopes to
+       <header> to pin one of them, so a mock with only a single button would
+       let a broken selector pass.
   -->
-  <button type="button">Sign in with ExpressVPN</button>
-  <textarea placeholder="Please sign in to start chatting" disabled></textarea>
+
+  <div class="px-5 py-3">
+    <p>Save your encrypted chat history</p>
+    <div class="flex flex-col gap-3 text-sm">
+      <button class="flex items-center gap-2"><svg class="w-4 h-4"></svg>Sign in with ExpressVPN</button>
+      <a href="https://checkout.expressvpn.com/order?product_type=express_ai">Get ExpressAI +</a>
+    </div>
+  </div>
+
+  <header class="flex items-center justify-between py-5 lg:py-3 flex-shrink-0 px-5">
+    <div class="flex items-center gap-1.5"><span>Beta</span></div>
+    <div class="flex items-center gap-3 text-sm">
+      <button class="flex items-center gap-2">
+        <svg class="w-4 h-4"></svg>
+        <span class="hidden sm:inline">Sign in with ExpressVPN</span>
+        <span class="sm:hidden">Sign in</span>
+      </button>
+      <a href="https://checkout.expressvpn.com/order?product_type=express_ai">Get ExpressAI +</a>
+    </div>
+  </header>
+
+  <textarea data-testid="chat-prompt-input" placeholder="Please sign in to start chatting" disabled></textarea>
+  <button data-testid="chat-send-btn" title="Send message" disabled></button>
 </body>
 </html>

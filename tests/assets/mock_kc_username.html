@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html><body>
+<!--
+  Mirrors ExpressVPN Keycloak's `login-username.ftl` (auth.expressvpn.com/realms/xvpn),
+  trimmed to the elements ExpressAI's LoginFlow addresses. Note the submit reads
+  "Email Sign-In Link": the default flow is PASSWORDLESS and goes straight to the
+  emailed-code page, which is why LoginFlow declares no password_input.
+-->
+<div id="root"><main>
+<h2 class="h2">Sign in</h2>
+<div id="kc-info"><p>Get a link that will instantly sign you in to your account.</p></div>
+<form id="kc-form-login" action="#" method="post"><div class="gap-15 flex flex-col">
+<div><div class="relative">
+<input class="peer" type="text" placeholder="Email" autocomplete="username" aria-invalid="false" id="username" name="username" value="">
+<label for="username">Email</label>
+</div></div>
+<button class="inline-flex" id="kc-login" name="login" type="submit">Email Sign-In Link</button>
+<div><a href="#">Sign in with your password</a></div>
+</div></form></main></div></body></html>

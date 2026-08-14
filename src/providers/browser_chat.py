@@ -29,6 +29,7 @@ from typing import AsyncIterator
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 
+from ..auth import AutoLogin, LoginFlow, OTPCriteria, build_otp_source
 from ..core.errors import AuthenticationRequired, ProviderError, ProviderTimeout
 from ..core.markdown import html_to_markdown
 from ..core.messages import flatten_messages
@@ -80,13 +81,66 @@ class BrowserChatProvider(BaseChatProvider):
     #: works anonymously and login just unlocks more models/credits/features —
     #: we run anyway and only *report* the login state on /health.
     requires_login: bool = True
+    #: Selectors for the sign-in form, enabling unattended re-authentication.
+    #: Left empty, an expired session stays a human's problem (see AutoLogin).
+    login_flow: LoginFlow = LoginFlow()
+
+    def login_credentials(self) -> tuple[str, str]:
+        """``(email, password)`` for auto-login, by convention from settings.
+
+        Subclasses override only if they name their settings differently.
+        """
+        return (
+            getattr(self.settings, f"{self.name}_email", "") or "",
+            getattr(self.settings, f"{self.name}_password", "") or "",
+        )
 
     def login_help(self) -> str:
+        hint = ""
+        if self.login_flow.configured and not self.auto_login.enabled:
+            hint = f" Auto-login is available but {self.auto_login.unavailable_reason()}."
         return (
             f"{self.name} is logged out (session expired or missing). Re-authenticate "
             "by running once with CHAT2API_HEADLESS=false and logging in, or provide a "
-            "fresh CHAT2API_STORAGE_STATE. Check GET /health for live auth state."
+            f"fresh CHAT2API_STORAGE_STATE.{hint} Check GET /health for live auth state."
         )
+
+    def otp_criteria(self) -> OTPCriteria:
+        """How to recognise *this* provider's code mail.
+
+        Precedence: a `CHAT2API_<PROVIDER>_OTP_*` env override beats the
+        provider's own :class:`LoginFlow` values, which beat the global default.
+        The provider knows its own sender and format, so the env vars exist only
+        for the day a site changes one and you'd rather not redeploy.
+        """
+        flow = self.login_flow
+        sender = getattr(self.settings, f"{self.name}_otp_from", "") or flow.otp_sender
+        pattern = (
+            getattr(self.settings, f"{self.name}_otp_pattern", "")
+            or flow.otp_pattern
+            or self.settings.otp_code_pattern
+        )
+        # The label is deployment-level (how *your* mailbox is organised), so it
+        # stays global rather than being a property of the provider.
+        return OTPCriteria(sender=sender, pattern=pattern, label=self.settings.gmail_otp_label)
+
+    @property
+    def auto_login(self) -> AutoLogin:
+        """This provider's unattended re-authentication (built once, on demand)."""
+        cached = getattr(self, "_auto_login", None)
+        if cached is None:
+            email, password = self.login_credentials()
+            cached = AutoLogin(
+                self.name,
+                self.login_flow,
+                self.settings,
+                lambda: build_otp_source(self.settings),
+                self.otp_criteria(),
+                email,
+                password,
+            )
+            self._auto_login = cached
+        return cached
 
     # -- lifecycle ---------------------------------------------------------
     async def startup(self) -> None:
@@ -106,17 +160,19 @@ class BrowserChatProvider(BaseChatProvider):
         if self.base_url and not page.url.startswith(self.base_url):
             await page.goto(self.base_url, wait_until="domcontentloaded")
         try:
-            await page.locator(self.selectors.ready_marker).first.wait_for(
-                state="visible", timeout=self.settings.nav_timeout_ms
-            )
+            await self._await_ready_marker(page)
         except PlaywrightTimeout as exc:
             if self.requires_login and await self._is_logged_out(page):
                 self._authenticated = False
-                raise AuthenticationRequired(self.login_help()) from exc
-            raise ProviderError(
-                f"{self.name} chat UI did not become ready; the page layout may have "
-                f"changed (update Selectors in providers/{self.name}.py)."
-            ) from exc
+                if await self._try_auto_login(page):
+                    await self._await_ready_marker(page)
+                else:
+                    raise AuthenticationRequired(self.login_help()) from exc
+            else:
+                raise ProviderError(
+                    f"{self.name} chat UI did not become ready; the page layout may have "
+                    f"changed (update Selectors in providers/{self.name}.py)."
+                ) from exc
 
         # Chat is usable. Now resolve login state (informational for /health).
         if self.requires_login:
@@ -129,6 +185,25 @@ class BrowserChatProvider(BaseChatProvider):
                     self.name,
                 )
         await self.enable_incognito(page)  # no-op unless a provider overrides it
+
+    async def _await_ready_marker(self, page: Page) -> None:
+        await page.locator(self.selectors.ready_marker).first.wait_for(
+            state="visible", timeout=self.settings.nav_timeout_ms
+        )
+
+    async def _try_auto_login(self, page: Page) -> bool:
+        """Attempt unattended re-authentication. False if it isn't configured.
+
+        A configured login that *fails* raises, because that is a real fault a
+        human needs to see — quietly falling back to the generic "logged out"
+        message would hide a wrong password or a changed form behind a message
+        telling them to go and log in by hand.
+        """
+        if not self.auto_login.enabled:
+            return False
+        logger.info("%s: session expired, attempting auto-login", self.name)
+        await self.auto_login.attempt(page, lambda: self._is_logged_out(page))
+        return True
 
     async def _is_logged_out(self, page: Page) -> bool:
         url = page.url.lower()

@@ -8,6 +8,7 @@ against the live site — re-run
 
 from __future__ import annotations
 
+from ..auth import LoginFlow
 from ..browser import BrowserManager
 from ..config import Settings
 from .browser_chat import BrowserChatProvider, Selectors
@@ -42,6 +43,33 @@ _SELECTORS = Selectors(
     file_input="input[type='file'][data-testid='file-input']",
 )
 
+# Sign-in leaves app.expressai.com for ExpressVPN's Keycloak
+# (auth.expressvpn.com/realms/xvpn), so most of these target Keycloak's own
+# markup — ids from its `login-username.ftl` and `otp-form.ftl` templates, which
+# are stable across theme changes in a way the Tailwind classes are not.
+#
+# The flow is **passwordless**: the email page's submit is labelled "Email
+# Sign-In Link" and goes straight to the emailed-code page. Keycloak also offers
+# a "Sign in with your password" link, but we don't take it — hence no
+# password_input here, which is what makes the password step skip.
+_LOGIN_FLOW = LoginFlow(
+    # Header button on the logged-out chat page. Two of these exist (the sidebar
+    # has one too); scoping to <header> pins the one that's always visible.
+    start_button="header button:has-text('Sign in')",
+    email_input="#username",
+    email_submit="#kc-login",
+    # No password step — see above.
+    otp_input="#otp",
+    # The OTP submit ("Continue") carries no id of its own, so it's addressed
+    # through the form's.
+    otp_submit="#kc-otp-login-form button[type='submit']",
+    # The code mail: "Your ExpressVPN verification code" from the address below,
+    # with "Verification code: NNNNNN" in the body (the subject holds no digits,
+    # so extraction relies on the body).
+    otp_sender="info@info.expressvpn.com",
+    otp_pattern=r"(?i)verification code\D{0,10}(\d{6})",
+)
+
 
 class ExpressAIProvider(BrowserChatProvider):
     name = "expressai"
@@ -61,6 +89,7 @@ class ExpressAIProvider(BrowserChatProvider):
     supports_web_search = True
     supports_attachments = True
     selectors = _SELECTORS
+    login_flow = _LOGIN_FLOW
 
     def __init__(self, settings: Settings, browser: BrowserManager):
         super().__init__(settings, browser)
