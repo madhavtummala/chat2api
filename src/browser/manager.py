@@ -33,6 +33,32 @@ from . import cookies
 logger = logging.getLogger(__name__)
 
 
+async def _dispose(*objects) -> None:
+    """Close Playwright objects in the order given, ignoring failures.
+
+    Every teardown path here — a half-finished launch, a context that died under
+    us, a clean stop — is disposing of something already known to be broken or
+    going away, so a failure to close is never worth propagating.
+    """
+    for obj in objects:
+        closer = getattr(obj, "close", None) or getattr(obj, "stop", None)
+        if closer is None:
+            continue
+        try:
+            await closer()
+        except Exception:  # noqa: BLE001 - disposing a dead browser is best-effort
+            logger.debug("Error disposing %r", obj, exc_info=True)
+
+
+async def _close_page(page: Page) -> None:
+    """Close a tab we are done with, ignoring a page that is already gone."""
+    try:
+        if not page.is_closed():
+            await page.close()
+    except Exception:  # noqa: BLE001 - closing a dead page is best-effort
+        logger.debug("Error closing tab", exc_info=True)
+
+
 class PageLease:
     """An exclusive borrow of a pooled :class:`~playwright.async_api.Page`."""
 
@@ -178,10 +204,7 @@ class BrowserManager:
         stale_playwright, stale_browser = self._playwright, self._browser
         self._playwright = self._browser = self._context = None
         self._started = False
-        self._pools.clear()
-        self._pool_pages.clear()
-        self._page_pool.clear()
-        self._uses.clear()
+        self._clear_pools()
         for task in self._replace_tasks:
             task.cancel()
         self._replace_tasks.clear()
@@ -193,37 +216,28 @@ class BrowserManager:
             self._spawn_teardown(stale_playwright, stale_browser)
 
     def _spawn_teardown(self, playwright: Playwright | None, browser: Browser | None) -> None:
-        async def _dispose() -> None:
-            for closer in (
-                getattr(browser, "close", None),
-                getattr(playwright, "stop", None),
-            ):
-                if closer is None:
-                    continue
-                try:
-                    await closer()
-                except Exception:  # noqa: BLE001 - disposing a dead browser is best-effort
-                    logger.debug("Error disposing stale browser objects", exc_info=True)
-
-        task = asyncio.create_task(_dispose())
-        self._teardown_tasks.add(task)
-        task.add_done_callback(self._teardown_tasks.discard)
+        self._spawn(_dispose(None, browser, playwright))
 
     async def _abort_partial_start(self) -> None:
         """Best-effort teardown of a half-initialised start(), resetting state."""
-        for closer in (
-            getattr(self._context, "close", None),
-            getattr(self._browser, "close", None),
-            getattr(self._playwright, "stop", None),
-        ):
-            if closer is None:
-                continue
-            try:
-                await closer()
-            except Exception:  # noqa: BLE001 - teardown of a broken start is best-effort
-                logger.debug("Error tearing down partial browser start", exc_info=True)
+        await _dispose(self._context, self._browser, self._playwright)
         self._playwright = self._browser = self._context = None
         self._started = False
+
+    def _spawn(self, coro) -> None:
+        """Run a best-effort teardown detached, keeping a reference so it isn't
+        garbage-collected mid-flight and can be cancelled by ``stop()``."""
+        task = asyncio.create_task(coro)
+        self._teardown_tasks.add(task)
+        task.add_done_callback(self._teardown_tasks.discard)
+
+    def _clear_pools(self) -> None:
+        """Drop all pool bookkeeping. The four maps are only meaningful together,
+        so every reset path (context lost, stop) clears them as one step."""
+        self._pools.clear()
+        self._pool_pages.clear()
+        self._page_pool.clear()
+        self._uses.clear()
 
     async def stop(self) -> None:
         async with self._start_lock:
@@ -235,12 +249,7 @@ class BrowserManager:
             # exactly the event that destroys them.
             await self._save_session_cookies()
             try:
-                if self._context:
-                    await self._context.close()
-                if self._browser:
-                    await self._browser.close()
-                if self._playwright:
-                    await self._playwright.stop()
+                await _dispose(self._context, self._browser, self._playwright)
             finally:
                 if self._cookie_task is not None:
                     self._cookie_task.cancel()
@@ -250,10 +259,7 @@ class BrowserManager:
                 self._replace_tasks.clear()
                 self._teardown_tasks.clear()
                 self._playwright = self._browser = self._context = None
-                self._pools.clear()
-                self._pool_pages.clear()
-                self._page_pool.clear()
-                self._uses.clear()
+                self._clear_pools()
                 self._started = False
                 self._closing = False
 
@@ -302,16 +308,7 @@ class BrowserManager:
             return pool
 
     def _spawn_teardown_page(self, page: Page) -> None:
-        async def _close() -> None:
-            try:
-                if not page.is_closed():
-                    await page.close()
-            except Exception:  # noqa: BLE001 - best-effort
-                logger.debug("Error closing orphaned tab", exc_info=True)
-
-        task = asyncio.create_task(_close())
-        self._teardown_tasks.add(task)
-        task.add_done_callback(self._teardown_tasks.discard)
+        self._spawn(_close_page(page))
 
     # -- tab checkout ------------------------------------------------------
     @asynccontextmanager
@@ -380,11 +377,7 @@ class BrowserManager:
     async def _replace(self, page: Page, key: str, reason: str) -> None:
         """Close a spent tab and add a fresh one to the same pool."""
         logger.info("Recycling tab in pool %r (reason=%s)", key, reason)
-        try:
-            if not page.is_closed():
-                await page.close()
-        except Exception:  # noqa: BLE001 - closing a dead page is best-effort
-            logger.debug("Error closing recycled tab", exc_info=True)
+        await _close_page(page)
         pool = self._pools.get(key)
         if not self._started or self._context is None or pool is None:
             return  # shutting down / pool gone

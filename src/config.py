@@ -29,9 +29,9 @@ class Settings(BaseSettings):
 
     # ---- Provider selection ---------------------------------------------
     # Comma-separated, **ordered** list of routable providers, e.g.
-    # `expressai,perplexity`. The order is the routing preference: the first
-    # entry serves requests that don't name a provider, and the rest are the
-    # failover order behind it. Empty means "all registered providers".
+    # `expressai,perplexity`. The order is the routing preference: it breaks ties
+    # when several providers offer the same bare model id, and it is the order
+    # failover walks. Empty means "all registered providers".
     # Providers are instantiated lazily and their tabs warmed on first use.
     providers: str = ""
 

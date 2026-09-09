@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import base64
-import json
 import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from ..core.tools import render_tool_calls
 from ..core.types import Attachment, ChatMessage, ChatRequest
 
 _DATA_URL = re.compile(r"^data:([^;,]*?)(;base64)?,(.*)$", re.S)
@@ -109,11 +109,9 @@ class Message(BaseModel):
         """
         body = self.text()
         if self.tool_calls:
-            rendered = "\n".join(
-                f"<tool_call>{json.dumps({'name': tc.function.name, 'arguments': _loads(tc.function.arguments)})}</tool_call>"
-                for tc in self.tool_calls
+            body = render_tool_calls(
+                body, [tc.model_dump() for tc in self.tool_calls]
             )
-            body = f"{body}\n{rendered}".strip() if body else rendered
         if self.role == "tool":
             who = f" for {self.name}" if self.name else ""
             body = f"[tool result{who}] {body}"
@@ -189,10 +187,3 @@ class ModelCard(BaseModel):
 class ModelList(BaseModel):
     object: Literal["list"] = "list"
     data: list[ModelCard]
-
-
-def _loads(arguments: str) -> Any:
-    try:
-        return json.loads(arguments)
-    except (json.JSONDecodeError, TypeError):
-        return arguments

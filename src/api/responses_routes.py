@@ -23,7 +23,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from ..config import settings
 from ..core.errors import ProviderError
 from ..core.messages import flatten_messages
-from ..core.tools import build_tools_preamble
+from ..core.tools import build_tools_preamble, render_tool_calls
 from ..core.types import ChatMessage, ChatRequest
 from ..providers import BaseChatProvider, ProviderRouter
 from . import openai_format as fmt
@@ -164,7 +164,9 @@ async def _run_loop(
                 return output_items, final_text, "completed"
 
             # Record the assistant's tool-call turn in the history.
-            history.append(ChatMessage(role="assistant", content=_render_calls(text, tool_calls)))
+            history.append(
+                ChatMessage(role="assistant", content=render_tool_calls(text, tool_calls))
+            )
 
             # Execute all MCP-owned calls concurrently (parallel tool calls run
             # in parallel); a tool we can't run halts the loop for the client.
@@ -193,14 +195,6 @@ async def _exec_mcp(mcp, call: dict) -> str:
         return await mcp.call_tool(name, json.loads(call["function"]["arguments"] or "{}"))
     except Exception as exc:  # noqa: BLE001 - surface tool errors to the model
         return f"[tool error] {exc}"
-
-
-def _render_calls(text: str, tool_calls: list[dict]) -> str:
-    rendered = "\n".join(
-        f"<tool_call>{json.dumps({'name': c['function']['name'], 'arguments': json.loads(c['function']['arguments'] or '{}')})}</tool_call>"
-        for c in tool_calls
-    )
-    return f"{text}\n{rendered}".strip() if text else rendered
 
 
 async def _stream_response(response: dict, output_text: str) -> AsyncIterator[str]:

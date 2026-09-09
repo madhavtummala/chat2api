@@ -35,6 +35,31 @@ class ToolCallEvent:
 Event = TextEvent | ToolCallEvent
 
 
+def render_tool_calls(text: str, calls: list[dict[str, Any]]) -> str:
+    """Re-render OpenAI-shaped tool calls back into the sentinel format.
+
+    The inverse of :class:`ToolCallParser`: an assistant turn that called tools
+    has to go back into the transcript looking exactly like what we asked the
+    model to emit, or a multi-turn tool loop stops making sense once flattened
+    into a single prompt. Used both for a client's prior turns (``/v1/chat/
+    completions``) and for the ones the Responses loop records itself, so the
+    sentinels live in one place and cannot drift apart.
+    """
+    rendered = "\n".join(
+        f"{OPEN}{json.dumps({'name': c['function']['name'], 'arguments': _loads(c['function']['arguments'])})}{CLOSE}"
+        for c in calls
+    )
+    return f"{text}\n{rendered}".strip() if text else rendered
+
+
+def _loads(arguments: str) -> Any:
+    """Decode an arguments JSON string, passing malformed input through as-is."""
+    try:
+        return json.loads(arguments or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return arguments
+
+
 def build_tools_preamble(tools: list[dict[str, Any]], required: bool) -> str:
     lines = [
         "You have access to the tools listed below.",
