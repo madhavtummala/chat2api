@@ -99,21 +99,6 @@ class BaseChatProvider(ABC):
         if discovered:
             self._models = list(dict.fromkeys(discovered))  # dedupe, keep order
 
-    async def select_model(self, page, model: str) -> None:
-        """Switch the chat UI to ``model`` before submitting a prompt.
-
-        Default: no-op (single-model UIs). Override for UIs with a model
-        picker (e.g. AI Studio / ChatGPT) to click the relevant option.
-        """
-
-    async def enable_incognito(self, page) -> None:
-        """Ensure proxied chats aren't saved into the human's chat history.
-
-        Default: no-op — for UIs that are already ephemeral (e.g. ExpressAI).
-        Override for providers (e.g. ChatGPT) that persist chats unless a
-        temporary-chat toggle is set.
-        """
-
     # -- generation --------------------------------------------------------
     @abstractmethod
     def generate(self, request: ChatRequest) -> AsyncIterator[str]:
