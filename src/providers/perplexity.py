@@ -14,9 +14,9 @@ How Perplexity differs from ExpressAI (all handled transparently):
     incognito (see :meth:`enable_incognito`) to keep proxied chats out of it.
   * Tools/MCP work the same as any other provider (text-based ``<tool_call>``
     emulation); a client just wouldn't send a *web-search* tool since it's native.
-  * Threads are resumable — the URL changes per conversation and incognito
-    sessions persist ~24h — but we don't rely on that: like ExpressAI, every
-    request runs statelessly in a fresh thread with the full transcript resent.
+  * Threading works exactly as for ExpressAI (see BrowserChatProvider): a
+    /v1/chat/completions request is one fresh thread with the full transcript
+    resent, while a /v1/responses agentic loop holds one thread across its turns.
 """
 
 from __future__ import annotations

@@ -203,8 +203,9 @@ async def health(
 
 @router.get("/v1/models", dependencies=[Depends(require_api_key)])
 async def list_models(provider_router: ProviderRouter = Depends(get_router)) -> ModelList:
-    # Advertise every routable model as `provider/model` so clients can pick a
-    # backend explicitly. Bare (unprefixed) models still work against the default.
+    # Advertise every routable model as `provider/model` — the exact ids clients
+    # send back. A bare model id also resolves, to whichever enabled provider
+    # offers it (see ProviderRouter.resolve); there is no default provider.
     return ModelList(
         data=[
             ModelCard(id=f"{provider.name}/{model}", owned_by=provider.name)

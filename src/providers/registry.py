@@ -1,7 +1,7 @@
 """Provider registry and factory.
 
 Providers register themselves here by name so the server can instantiate the
-one selected via ``CHAT2API_PROVIDER`` without importing concrete classes at
+ones listed in ``CHAT2API_PROVIDERS`` without importing concrete classes at
 the call site.
 """
 
