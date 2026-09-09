@@ -164,10 +164,14 @@ class BrowserChatProvider(BaseChatProvider):
         except PlaywrightTimeout as exc:
             if self.requires_login and await self._is_logged_out(page):
                 self._authenticated = False
-                if await self._try_auto_login(page):
-                    await self._await_ready_marker(page)
-                else:
-                    raise AuthenticationRequired(self.login_help()) from exc
+                # Try the cheap, silent path first (see _try_silent_reauth):
+                # it already confirms the ready marker itself, so only fall to
+                # auto-login (email + OTP) if it didn't get us there.
+                if not await self._try_silent_reauth(page):
+                    if await self._try_auto_login(page):
+                        await self._await_ready_marker(page)
+                    else:
+                        raise AuthenticationRequired(self.login_help()) from exc
             else:
                 raise ProviderError(
                     f"{self.name} chat UI did not become ready; the page layout may have "
@@ -190,6 +194,41 @@ class BrowserChatProvider(BaseChatProvider):
         await page.locator(self.selectors.ready_marker).first.wait_for(
             state="visible", timeout=self.settings.nav_timeout_ms
         )
+
+    async def _try_silent_reauth(self, page: Page) -> bool:
+        """Nudge an OIDC-style SSO session into showing itself, in place.
+
+        Some sites (ExpressAI's Keycloak included) don't check whether the
+        browser already carries a valid SSO session when the SPA first loads —
+        the composer renders logged-out even though signing in again would be a
+        silent no-op. Clicking the same "Sign in" button a human would press
+        sends the browser through the identity provider's authorize redirect;
+        if an SSO cookie from an earlier login (manual, auto, or a previous run
+        of this same tab) is still valid, that redirect bounces straight back
+        authenticated, with no form to fill in.
+
+        This must stay a no-op on a *genuinely* logged-out session: the click
+        just lands on the sign-in form instead, ready_marker keeps failing, and
+        we fall through to auto-login / the manual-login error exactly as
+        before. Doing this in place — rather than opening a fresh tab — is what
+        keeps a tab that just watched a human finish a manual login in
+        rotation, instead of it being discarded as "still logged out" and a
+        blank replacement tab taking over mid-request.
+        """
+        if not self.login_flow.start_button:
+            return False
+        try:
+            button = page.locator(self.login_flow.start_button).first
+            if not await button.count():
+                return False
+            await button.click(timeout=self.settings.login_step_timeout_ms)
+        except (PlaywrightTimeout, PlaywrightError):
+            return False
+        try:
+            await self._await_ready_marker(page)
+            return True
+        except PlaywrightTimeout:
+            return False
 
     async def _try_auto_login(self, page: Page) -> bool:
         """Attempt unattended re-authentication. False if it isn't configured.
@@ -293,6 +332,14 @@ class BrowserChatProvider(BaseChatProvider):
             logger.debug("Model switch to %r failed; continuing", model, exc_info=True)
         finally:
             await self._close_modals(page)
+
+    async def enable_incognito(self, page: Page) -> None:
+        """Ensure proxied chats aren't saved into the human's chat history.
+
+        Default: no-op — for UIs that are already ephemeral (e.g. ExpressAI).
+        Override for providers (e.g. Perplexity) that persist chats unless a
+        temporary-chat toggle is set.
+        """
 
     async def _close_modals(self, page: Page) -> None:
         if not self.selectors.blocking_overlay:
