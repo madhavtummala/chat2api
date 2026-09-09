@@ -1,0 +1,95 @@
+# chat2api — Raspberry Pi deployment fragment.
+#
+# Merge these two services into your existing agent.yml.
+#
+# Deploy order:
+#   1. Test the branch image (tag below) before merging to main.
+#   2. Once happy, merge -> CI republishes :latest, then cut a v* tag and pin it.
+#
+# First deploy of this version only:
+#   docker compose pull chat2api
+#   docker compose down chat2api     # `down`, not `restart` — the old container
+#   docker compose up -d chat2api    # still holds a stale /tmp/.X99-lock
+
+services:
+  chat2api:
+    # Testing the branch build first. After merging, switch to a pinned version
+    # tag (e.g. :v0.2.0) rather than :latest — a moving tag means you cannot say
+    # which build is running, and cannot roll back when one is bad.
+    image: ghcr.io/madhavtummala/chat2api:reliability-hardening
+    container_name: chat2api
+    restart: unless-stopped
+    environment:
+      CHAT2API_PROVIDER: expressai
+
+      # Routing allowlist. googleaimode is blocked on this device and returns
+      # scraped search chrome instead of raising — with failover enabled it
+      # would answer a failed request with garbage rather than let it fail.
+      # Keep it unroutable. (Re-verify perplexity still works before relying on
+      # it as the failover target.)
+      CHAT2API_PROVIDERS: expressai,perplexity
+
+      CHAT2API_HEADLESS: "false"      # headful under Xvfb (clears Cloudflare)
+      CHAT2API_VNC: "true"            # live browser on :6080 for login/debug
+
+      # One active user needs one tab per provider, and each tab is real
+      # Chromium memory on a small host.
+      CHAT2API_MAX_CONCURRENCY: "1"
+      # Recycle tabs well before the 200-use default; renderer memory creeps up
+      # much sooner than that on a Pi.
+      CHAT2API_MAX_TAB_USES: "50"
+
+    ports:
+      - "9000:9000"
+      # noVNC is passwordless and drives a browser logged into your accounts.
+      # Bind to loopback and reach it over Tailscale/SSH — never the LAN.
+      - "127.0.0.1:6080:6080"
+
+    volumes:
+      - ./chat2api/browser_profile:/app/.browser_profile
+
+    # Marks the container unhealthy when the browser is down AND its last
+    # relaunch attempt failed. Note: Docker's restart policy does NOT act on
+    # "unhealthy" (that is a Swarm feature) — the autoheal service below is what
+    # turns this into an actual restart.
+    # Use the plain path; ?deep=1 navigates a tab per provider and would compete
+    # with real traffic.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:9000/health').read()"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s   # Chromium's first launch is slow on a Pi
+
+    labels:
+      autoheal: "true"
+
+    # Bound the blast radius: a Chromium leak should OOM this container and get
+    # it restarted, not take the host (including sshd) down. Watch `docker
+    # stats` for a week and tighten.
+    mem_limit: 2g
+    cpus: 3.0
+
+  # Restarts any container labelled autoheal=true once its healthcheck fails.
+  # Without this the healthcheck only reports; nothing acts on it.
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: autoheal
+    restart: unless-stopped
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      AUTOHEAL_INTERVAL: "30"
+      AUTOHEAL_START_PERIOD: "120"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+# Removed from the previous version, deliberately:
+#   PID / GID  — no-ops. The app reads only CHAT2API_-prefixed settings and the
+#                container runs as root regardless. Don't switch to `user:`
+#                either: Playwright's Chromium lives in /root/.cache, so a
+#                non-root UID cannot launch it.
+#   command:   — the SingletonLock cleanup is now in docker/entrypoint.sh.
