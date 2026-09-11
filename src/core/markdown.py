@@ -50,20 +50,32 @@ _OPTIONS = dict(
     escape_misc=False,
 )
 
+# Same, but discarding images — for providers whose web-search answers stud
+# every citation with a thumbnail/favicon. A text client can't render those, so
+# each one lands as a broken `![image](https://…)`; the surrounding prose and
+# its inline reference links are the useful part. Note this also drops the link
+# around an image-only citation chip (an anchor with no remaining content emits
+# nothing), which is intended: those chips repeat a URL the prose already cites.
+_NO_IMAGE_OPTIONS = dict(_OPTIONS, strip=["img"])
+
 # Collapse 3+ consecutive newlines down to a single blank line.
 _EXCESS_BLANK_LINES = re.compile(r"\n{3,}")
 
 
-def html_to_markdown(html: str) -> str:
+def html_to_markdown(html: str, *, drop_images: bool = False) -> str:
     """Convert an answer's ``innerHTML`` to clean Markdown.
 
     Returns an empty string for empty/whitespace-only input. Trailing spaces per
     line and runs of blank lines are trimmed so spacing matches typical LLM
     output.
+
+    With ``drop_images`` the answer's images are dropped (see
+    :data:`_NO_IMAGE_OPTIONS`) — for providers whose web-search answers come
+    back full of thumbnails a text client can't render.
     """
     if not html or not html.strip():
         return ""
-    md = _markdownify(html, **_OPTIONS)
+    md = _markdownify(html, **(_NO_IMAGE_OPTIONS if drop_images else _OPTIONS))
     # Strip per-line trailing whitespace, then normalise blank-line runs.
     md = "\n".join(line.rstrip() for line in md.splitlines())
     md = _EXCESS_BLANK_LINES.sub("\n\n", md)

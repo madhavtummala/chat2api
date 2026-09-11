@@ -11,6 +11,7 @@ from __future__ import annotations
 from ..auth import LoginFlow
 from ..browser import BrowserManager
 from ..config import Settings
+from ..core.markdown import html_to_markdown
 from .browser_chat import BrowserChatProvider, Selectors
 
 _SELECTORS = Selectors(
@@ -94,3 +95,18 @@ class ExpressAIProvider(BrowserChatProvider):
     def __init__(self, settings: Settings, browser: BrowserManager):
         super().__init__(settings, browser)
         self.base_url = settings.expressai_base_url
+
+    async def _reply_text(self, bubbles) -> str:
+        """Read the newest reply as Markdown, with images dropped.
+
+        Identical to the base read except for ``drop_images``. In online (web
+        search) mode ExpressAI renders a thumbnail/favicon beside every citation
+        plus standalone result images; over our streaming text response those
+        arrive as unloadable `![image](…)` noise, several per source. Dropping
+        them keeps the prose and its inline reference links readable. Chips that
+        were *only* an image go with them (see :func:`html_to_markdown`) — they
+        just repeat a URL the surrounding text already cites.
+        """
+        if not await bubbles.count():
+            return ""
+        return html_to_markdown(await bubbles.last.inner_html(), drop_images=True)
