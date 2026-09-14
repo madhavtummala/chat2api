@@ -32,6 +32,8 @@ _SELECTORS = Selectors(
     # Model picker: chevron button opens a modal; options are role=button rows.
     model_selector="button:has(svg.lucide-chevron-down)",
     model_option="[role='button']:has-text('{model}')",
+    # Every row in the open picker modal — the catalogue, read live at startup.
+    model_options_all=".fixed.inset-0 [role='button']",
     modal_close=".fixed.inset-0 button:has(svg.lucide-x)",
     blocking_overlay=".fixed.inset-0",
     # Web-search "on" state is the teal text colour (no aria-pressed); the

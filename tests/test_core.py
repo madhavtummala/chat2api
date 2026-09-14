@@ -94,3 +94,25 @@ def test_tool_call_sentinels_survive_html_conversion():
         f"{OPEN}{payload}{CLOSE}"
     )
 
+
+def test_model_names_from_picker_rows():
+    """Picker rows carry more than the id; only the first line names the model."""
+    from src.providers.browser_chat import _model_names
+
+    rows = [
+        "GPT OSS 120B\nFast general-purpose model",
+        "Qwen3.8 27B\nNEW",
+        "   ",                       # blank row
+        "GPT OSS 120B\nduplicate",   # same model listed twice
+        "A description so long it cannot plausibly be a model name, but is "
+        "matched by the same row selector as the real options are",
+    ]
+    assert _model_names(rows) == ["GPT OSS 120B", "Qwen3.8 27B"]
+
+
+def test_model_names_empty_input():
+    """No rows scraped means no catalogue — the caller keeps its seed list."""
+    from src.providers.browser_chat import _model_names
+
+    assert _model_names([]) == []
+    assert _model_names(["", "  \n  "]) == []

@@ -79,6 +79,12 @@ class Settings(BaseSettings):
     max_tab_uses: int = Field(default=200, ge=0)
     # Per-request navigation / element timeout in milliseconds.
     nav_timeout_ms: int = 45_000
+    # How long to wait for a *decision* between two mutually exclusive page
+    # states (composer vs sign-in screen) once the page has loaded. Much shorter
+    # than nav_timeout_ms on purpose: whichever one the site is going to render
+    # is in the DOM within a second or two of hydration, so a longer budget only
+    # delays re-authentication on a session that is already known to be dead.
+    auth_probe_timeout_ms: int = Field(default=8_000, gt=0)
     # How long a request waits for a free tab before giving up with 503. A wedged
     # tab must not stall every later request behind it indefinitely; a prompt 503
     # is retryable by the client, an open-ended hang is not.

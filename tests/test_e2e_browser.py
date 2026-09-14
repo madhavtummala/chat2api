@@ -21,6 +21,7 @@ import asyncio
 import base64
 import json
 import re
+import time
 from pathlib import Path
 from typing import NamedTuple
 
@@ -390,3 +391,61 @@ async def test_expressai_login_is_passwordless():
     assert _LOGIN_FLOW.password_input == ""
     assert _LOGIN_FLOW.password_submit == ""
     assert _LOGIN_FLOW.otp_input == "#otp"
+
+
+@pytest.mark.asyncio
+async def test_logged_out_page_is_detected_without_waiting_out_the_composer():
+    """A sign-in screen must resolve promptly, not after ``nav_timeout_ms``.
+
+    The composer never appears on a logged-out page, so waiting for it and
+    treating the timeout as "logged out" delayed every re-authentication by the
+    full navigation budget. The race must return the login verdict in a time
+    that could not possibly be a timeout — hence the generous budget below
+    paired with a tight assertion on elapsed time.
+    """
+    from playwright.async_api import async_playwright
+
+    from src.providers.browser_chat import _LOGIN, _READY, BrowserChatProvider
+    from src.providers.expressai import _SELECTORS
+
+    selectors = {_READY: _SELECTORS.ready_marker, _LOGIN: _SELECTORS.login_marker}
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.goto(LOGIN_URL)
+            started = time.monotonic()
+            outcome = await BrowserChatProvider._first_visible(
+                object(), page, selectors, 30_000
+            )
+            elapsed = time.monotonic() - started
+            assert outcome == _LOGIN
+            assert elapsed < 5, f"verdict took {elapsed:.1f}s — the race isn't racing"
+
+            # The same race on a usable chat must pick the composer instead.
+            await page.goto(MOCK_URL)
+            assert await BrowserChatProvider._first_visible(
+                object(), page, selectors, 30_000
+            ) == _READY
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_first_visible_returns_none_when_no_selector_matches():
+    """Neither marker appearing stays a timeout, not a false verdict."""
+    from playwright.async_api import async_playwright
+
+    from src.providers.browser_chat import BrowserChatProvider
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await page.goto(LOGIN_URL)
+            outcome = await BrowserChatProvider._first_visible(
+                object(), page, {"a": "#nope-one", "b": "#nope-two"}, 500
+            )
+            assert outcome is None
+        finally:
+            await browser.close()
