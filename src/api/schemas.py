@@ -103,7 +103,7 @@ class Message(BaseModel):
     def render(self) -> str:
         """Flatten this message (incl. any tool calls/results) to plain text.
 
-        Prior assistant tool calls are re-rendered in the same ``<tool_call>``
+        Prior assistant tool calls are re-rendered in the same ``⟦tool_call⟧``
         format we ask the model to emit, and tool results are labelled, so a
         multi-turn tool loop stays coherent when flattened into one prompt.
         """

@@ -101,9 +101,9 @@ WEATHER_TOOL = {
 
 # A provider reply that decides to call a tool, streamed in awkward fragments.
 TOOL_DELTAS = [
-    "Let me check. <tool_",
-    'call>{"name": "get_weather", ',
-    '"arguments": {"city": "Paris"}}</tool_call>',
+    "Let me check. ⟦tool_",
+    'call⟧{"name": "get_weather", ',
+    '"arguments": {"city": "Paris"}}⟦/tool_call⟧',
 ]
 
 
@@ -192,7 +192,7 @@ def test_tool_choice_none_skips_tool_parsing():
     body = resp.json()
     assert body["choices"][0]["finish_reason"] == "stop"
     assert "tool_calls" not in body["choices"][0]["message"]
-    assert "<tool_call>" in body["choices"][0]["message"]["content"]
+    assert "⟦tool_call⟧" in body["choices"][0]["message"]["content"]
 
 
 def test_auth_enforced_when_keys_configured(monkeypatch):

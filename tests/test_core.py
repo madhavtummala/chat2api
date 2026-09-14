@@ -68,3 +68,29 @@ def test_drop_images_leaves_text_and_code_intact():
     assert "- **Alert:** bad bug" in md
     assert "```python\nx = 1" in md
     assert "Trend" in md and "c.png" not in md
+
+
+def test_tool_call_sentinels_survive_html_conversion():
+    """The sentinel must round-trip through the site's HTML rendering.
+
+    An HTML-shaped delimiter does not: a chat UI sanitises an unknown element
+    like `<tool_call>` out of the reply before it ever reaches the DOM, so the
+    call arrives as bare JSON and is handed back as prose. These delimiters are
+    chosen to survive that, and this guards against regressing to a tag.
+    """
+    from src.core.tools import CLOSE, OPEN, ToolCallEvent, ToolCallParser
+
+    assert "<" not in OPEN and ">" not in OPEN, "sentinel must not look like an HTML tag"
+
+    payload = '{"name": "get_weather", "arguments": {"city": "Paris"}}'
+    md = html_to_markdown(f"<p>{OPEN}{payload}{CLOSE}</p>")
+    assert md == f"{OPEN}{payload}{CLOSE}"
+
+    events = ToolCallParser().feed(md)
+    assert [type(e) for e in events] == [ToolCallEvent]
+    assert events[0].name == "get_weather"
+
+    assert html_to_markdown(f"<p>{OPEN}{payload}{CLOSE}</p>", drop_images=True) == (
+        f"{OPEN}{payload}{CLOSE}"
+    )
+

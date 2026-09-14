@@ -7,11 +7,17 @@ than being reimplemented per route.
 
 from __future__ import annotations
 
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Collection
 
 from fastapi import HTTPException
 
-from ..core.tools import Event, TextEvent, ToolCallEvent, ToolCallParser
+from ..core.tools import (
+    Event,
+    TextEvent,
+    ToolCallEvent,
+    ToolCallParser,
+    normalize_tool_calls,
+)
 from ..providers import BaseChatProvider
 from . import openai_format as fmt
 
@@ -42,8 +48,18 @@ def resolve_tools(
     return tool_defs, use_tools, required
 
 
+def tool_names(tool_defs: list[dict]) -> set[str]:
+    """The advertised tool names, used to recognise a call the model reformatted."""
+    names = set()
+    for tool in tool_defs:
+        name = (tool.get("function") or tool).get("name")
+        if name:
+            names.add(name)
+    return names
+
+
 async def parse_events(
-    stream: AsyncIterator[str], use_tools: bool
+    stream: AsyncIterator[str], use_tools: bool, names: Collection[str] = ()
 ) -> AsyncIterator[Event]:
     """Turn a stream of text deltas into text / tool-call events.
 
@@ -51,6 +67,13 @@ async def parse_events(
     stateless turn, or ``session.send(...)`` for a continued thread. With
     ``use_tools`` False the output is passed through verbatim, so a reply that
     merely mentions the sentinel is never mangled into a phantom call.
+
+    When ``names`` is supplied the reply is assembled before parsing, so a call
+    the model wrote in its own notation (a fenced block, or bare JSON after a
+    line of narration) can be recognised — see :func:`normalize_tool_calls`,
+    which needs the whole reply to judge one. Buffering costs nothing today:
+    browser providers read a settled answer off the page and deliver it as a
+    single delta anyway (see ``BrowserChatSession.send``).
     """
     if not use_tools:
         async for delta in stream:
@@ -58,6 +81,13 @@ async def parse_events(
                 yield TextEvent(delta)
         return
     parser = ToolCallParser()
+    if names:
+        text = "".join([delta async for delta in stream if delta])
+        for event in parser.feed(normalize_tool_calls(text, names)):
+            yield event
+        for event in parser.finish():
+            yield event
+        return
     async for delta in stream:
         for event in parser.feed(delta):
             yield event
@@ -66,7 +96,7 @@ async def parse_events(
 
 
 async def collect(
-    stream: AsyncIterator[str], use_tools: bool
+    stream: AsyncIterator[str], use_tools: bool, names: Collection[str] = ()
 ) -> tuple[str, list[dict]]:
     """Drain a whole (non-streaming) generation into ``(text, tool_calls)``.
 
@@ -74,7 +104,7 @@ async def collect(
     """
     text_parts: list[str] = []
     tool_calls: list[dict] = []
-    async for event in parse_events(stream, use_tools):
+    async for event in parse_events(stream, use_tools, names):
         if isinstance(event, ToolCallEvent):
             tool_calls.append(
                 {
