@@ -43,7 +43,7 @@ async def test_mcp_tools_injected_and_delegated_in_chat_completions(mcp):
     # Model chooses to call an MCP-advertised tool; chat completions delegates it.
     deltas = [
         "One sec.",
-        '<tool_call>{"name": "mock__echo", "arguments": {"text": "hi"}}</tool_call>',
+        '⟦tool_call⟧{"name": "mock__echo", "arguments": {"text": "hi"}}⟦/tool_call⟧',
     ]
     app = make_app(FakeProvider(deltas=deltas))
     app.state.mcp = mcp

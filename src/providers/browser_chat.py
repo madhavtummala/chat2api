@@ -39,6 +39,27 @@ from .base import BaseChatProvider
 logger = logging.getLogger(__name__)
 
 
+def _model_names(labels: list[str]) -> list[str]:
+    """Model names from raw picker-row text.
+
+    A row usually renders the name on its first line with a description or a
+    badge under it, so only that line is the id. Blank and implausibly long
+    lines are dropped: the picker modal also holds chrome (a close button, a
+    search field) that matches the same row selector on some sites.
+    """
+    names: list[str] = []
+    for label in labels:
+        first = label.strip().splitlines()[0].strip() if label.strip() else ""
+        if first and len(first) <= 60:
+            names.append(first)
+    return list(dict.fromkeys(names))
+
+
+#: Outcomes of a two-way page-state race (see _first_visible).
+_READY = "ready"
+_LOGIN = "login"
+
+
 @dataclass(frozen=True)
 class Selectors:
     """CSS/Playwright selectors for one chat site. All site-specific assumptions
@@ -59,6 +80,10 @@ class Selectors:
     generating_indicator: str = ""
     model_selector: str = ""        # opens the model picker; shows the current model
     model_option: str = "[role='option']:has-text('{model}')"  # {model} substituted
+    #: Every row in the *open* picker, for discovering the catalogue. Distinct
+    #: from model_option, which addresses one known row by name. Leave empty to
+    #: keep the provider's static available_models.
+    model_options_all: str = ""
     modal_close: str = ""           # closes a blocking modal (e.g. model picker)
     blocking_overlay: str = ""      # a full-screen overlay that blocks input
     web_search_toggle: str = ""     # web-search on/off button
@@ -156,12 +181,18 @@ class BrowserChatProvider(BaseChatProvider):
         during hydration. On login-*required* sites the composer only appears
         when logged in; on optional-login sites it appears either way, so login
         state is tracked separately and being anonymous is not an error.
+
+        The wait *races* the composer against the sign-in screen rather than
+        waiting the composer out. A logged-out session never grows a composer,
+        so using that timeout as the logged-out signal spent the whole
+        ``nav_timeout_ms`` before re-authentication could even begin. Racing
+        keeps the hydration tolerance — neither marker is judged until one of
+        them actually appears — while spotting a dead session as soon as the
+        site renders one.
         """
         if self.base_url and not page.url.startswith(self.base_url):
             await page.goto(self.base_url, wait_until="domcontentloaded")
-        try:
-            await self._await_ready_marker(page)
-        except PlaywrightTimeout as exc:
+        if await self._await_ready_or_login(page) is not _READY:
             if self.requires_login and await self._is_logged_out(page):
                 self._authenticated = False
                 # Try the cheap, silent path first (see _try_silent_reauth):
@@ -171,12 +202,12 @@ class BrowserChatProvider(BaseChatProvider):
                     if await self._try_auto_login(page):
                         await self._await_ready_marker(page)
                     else:
-                        raise AuthenticationRequired(self.login_help()) from exc
+                        raise AuthenticationRequired(self.login_help())
             else:
                 raise ProviderError(
                     f"{self.name} chat UI did not become ready; the page layout may have "
                     f"changed (update Selectors in providers/{self.name}.py)."
-                ) from exc
+                )
 
         # Chat is usable. Now resolve login state (informational for /health).
         if self.requires_login:
@@ -194,6 +225,55 @@ class BrowserChatProvider(BaseChatProvider):
         await page.locator(self.selectors.ready_marker).first.wait_for(
             state="visible", timeout=self.settings.nav_timeout_ms
         )
+
+    async def _await_ready_or_login(self, page: Page) -> str | None:
+        """Wait for whichever resolves first: the composer, or a sign-in screen.
+
+        Returns :data:`_READY`, :data:`_LOGIN`, or None if neither appeared in
+        time. Providers with no ``login_marker`` simply wait on the composer as
+        before — there is nothing to race it against.
+        """
+        return await self._first_visible(
+            page,
+            {_READY: self.selectors.ready_marker, _LOGIN: self.selectors.login_marker},
+            self.settings.nav_timeout_ms,
+        )
+
+    async def _first_visible(
+        self, page: Page, selectors: dict[str, str], timeout_ms: int
+    ) -> str | None:
+        """Key of whichever selector becomes visible first, or None on timeout.
+
+        Playwright can only wait on one locator at a time, so the alternatives
+        race as separate tasks and the losers are cancelled. A selector that is
+        empty is skipped, which is what lets a provider leave a marker undefined
+        without needing a branch here.
+        """
+        tasks = {
+            asyncio.create_task(
+                page.locator(sel).first.wait_for(state="visible", timeout=timeout_ms)
+            ): key
+            for key, sel in selectors.items()
+            if sel
+        }
+        if not tasks:
+            return None
+        try:
+            pending = set(tasks)
+            while pending:
+                done, pending = await asyncio.wait(
+                    pending, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in done:
+                    # A loser that timed out or raced a navigation is not a
+                    # verdict; keep waiting on whatever is still pending.
+                    if not task.cancelled() and task.exception() is None:
+                        return tasks[task]
+            return None
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _try_silent_reauth(self, page: Page) -> bool:
         """Nudge an OIDC-style SSO session into showing itself, in place.
@@ -224,11 +304,17 @@ class BrowserChatProvider(BaseChatProvider):
             await button.click(timeout=self.settings.login_step_timeout_ms)
         except (PlaywrightTimeout, PlaywrightError):
             return False
-        try:
-            await self._await_ready_marker(page)
-            return True
-        except PlaywrightTimeout:
-            return False
+        # Race the composer against the sign-in form the click lands on when
+        # the SSO cookie is dead. Waiting only on the composer meant a second
+        # full nav_timeout_ms elapsed before auto-login started, on exactly the
+        # sessions that always need it; the form appearing is a definitive "no"
+        # and is available within a redirect or two.
+        outcome = await self._first_visible(
+            page,
+            {_READY: self.selectors.ready_marker, _LOGIN: self.login_flow.email_input},
+            self.settings.auth_probe_timeout_ms,
+        )
+        return outcome is _READY
 
     async def _try_auto_login(self, page: Page) -> bool:
         """Attempt unattended re-authentication. False if it isn't configured.
@@ -311,6 +397,39 @@ class BrowserChatProvider(BaseChatProvider):
         """
         async with self.browser.acquire(self.name) as lease:
             yield BrowserChatSession(self, lease.page)
+
+    async def list_models(self) -> list[str]:
+        """Read the catalogue out of the site's own model picker.
+
+        The static ``available_models`` is only a seed: a site adds and retires
+        models on its own schedule, and a stale list rejects a model the user can
+        plainly see in the UI. Falls back to the seed when a provider defines no
+        picker selectors, and :meth:`refresh_models` already treats a failure
+        here as non-fatal — a scrape that breaks must not stop the server.
+        """
+        if not self.selectors.model_selector or not self.selectors.model_options_all:
+            return list(self.available_models)
+        async with self.browser.acquire(self.name) as lease:
+            page = lease.page
+            await self._ensure_ready(page)
+            picker = page.locator(self.selectors.model_selector).first
+            if not await picker.count():
+                return list(self.available_models)
+            try:
+                await picker.click()
+                rows = page.locator(self.selectors.model_options_all)
+                await rows.first.wait_for(
+                    state="visible", timeout=self.settings.auth_probe_timeout_ms
+                )
+                labels = [
+                    (await rows.nth(i).inner_text()) for i in range(await rows.count())
+                ]
+            except PlaywrightError:
+                logger.debug("%s: model discovery failed", self.name, exc_info=True)
+                return list(self.available_models)
+            finally:
+                await self._close_modals(page)
+        return _model_names(labels) or list(self.available_models)
 
     async def select_model(self, page: Page, model: str) -> None:
         """Switch models only when needed: skip if unknown, unsupported, or

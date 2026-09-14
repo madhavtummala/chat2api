@@ -4,7 +4,7 @@ Chat UIs don't expose a model's native function-calling channel, so we instruct
 the model (via a prompt preamble) to emit tool calls as a sentinel-wrapped JSON
 block in its visible reply, then parse them back out of the streamed text:
 
-    <tool_call>{"name": "get_weather", "arguments": {"city": "Paris"}}</tool_call>
+    ⟦tool_call⟧{"name": "get_weather", "arguments": {"city": "Paris"}}⟦/tool_call⟧
 
 :class:`ToolCallParser` is a streaming parser: feed it text deltas and it yields
 ``TextEvent``/``ToolCallEvent`` objects, holding back only the minimum needed so
@@ -14,11 +14,17 @@ a tag split across two deltas is never leaked as content.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import Any, Collection, Iterator
 
-OPEN = "<tool_call>"
-CLOSE = "</tool_call>"
+# Deliberately NOT angle brackets. A chat UI renders the reply as HTML, and an
+# unknown element like `<tool_call>` is sanitised away before it reaches the DOM
+# — the tags vanish in transit and the call arrives as bare JSON prose, with
+# nothing downstream able to tell it was ever a call. These delimiters survive
+# the round trip verbatim and are rare enough not to collide with real prose.
+OPEN = "⟦tool_call⟧"
+CLOSE = "⟦/tool_call⟧"
 
 
 @dataclass(slots=True)
@@ -60,12 +66,83 @@ def _loads(arguments: str) -> Any:
         return arguments
 
 
+#: A fenced code block, with or without a language tag.
+_FENCE = re.compile(r"```[a-zA-Z]*\n(.*?)```", re.DOTALL)
+
+
+def normalize_tool_calls(text: str, names: Collection[str]) -> str:
+    """Rewrite calls the model wrote in its *own* notation into our sentinels.
+
+    Instruction-tuned models are heavily trained to present a function call as a
+    fenced ``json`` block, or as a bare JSON object after a sentence of
+    narration, and a mid-size model will often do that no matter how the
+    preamble asks. Those replies carry a perfectly good call that we would
+    otherwise hand back as prose — the client sees the model "describing" a
+    call it actually made.
+
+    Rewriting is gated on ``names``: only an object naming a tool this request
+    actually advertised becomes a call. That is what keeps a reply which merely
+    *discusses* JSON from being mangled into a phantom call. Text already
+    carrying a sentinel is returned untouched — the model complied, and a second
+    interpretation could only make it worse.
+    """
+    if not names or OPEN in text:
+        return text
+
+    def _call(obj: Any) -> str | None:
+        if not isinstance(obj, dict) or obj.get("name") not in names:
+            return None
+        return OPEN + json.dumps(
+            {"name": obj["name"], "arguments": obj.get("arguments", {})}
+        ) + CLOSE
+
+    # Unwrap fences whose whole body is a call, so the backticks don't survive
+    # as stray text once the call inside them is lifted out.
+    def _unfence(match: re.Match) -> str:
+        try:
+            obj = json.loads(match.group(1).strip())
+        except json.JSONDecodeError:
+            return match.group(0)
+        return _call(obj) or match.group(0)
+
+    text = _FENCE.sub(_unfence, text)
+    if OPEN in text:
+        return text
+
+    # Then any bare object sitting in prose. raw_decode finds where each one
+    # ends, so a call embedded mid-sentence is lifted without guessing.
+    decoder = json.JSONDecoder()
+    out: list[str] = []
+    i = 0
+    while i < len(text):
+        if text[i] != "{":
+            out.append(text[i])
+            i += 1
+            continue
+        try:
+            obj, end = decoder.raw_decode(text, i)
+        except ValueError:
+            out.append(text[i])
+            i += 1
+            continue
+        rendered = _call(obj)
+        if rendered is None:
+            out.append(text[i])
+            i += 1
+        else:
+            out.append(rendered)
+            i = end
+    return "".join(out)
+
+
 def build_tools_preamble(tools: list[dict[str, Any]], required: bool) -> str:
     lines = [
         "You have access to the tools listed below.",
         "To call a tool, output a block in EXACTLY this format and nothing else:",
         f'{OPEN}{{"name": "<tool_name>", "arguments": {{<json-args>}}}}{CLOSE}',
         "You may emit several such blocks. If no tool is needed, reply normally.",
+        "Do NOT put the block in a markdown code fence, and do NOT describe the "
+        "call in prose — emit the raw block exactly as shown above.",
         "",
         "Available tools:",
     ]

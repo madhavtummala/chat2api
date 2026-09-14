@@ -22,7 +22,7 @@ from ..providers import (
 from . import openai_format as fmt
 from .auth import require_api_key
 from .schemas import ChatCompletionRequest, ModelCard, ModelList
-from .tool_runtime import collect, parse_events, resolve_tools
+from .tool_runtime import collect, parse_events, resolve_tools, tool_names
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -273,14 +273,19 @@ async def chat_completions(
 
     if body.stream:
         return StreamingResponse(
-            _stream(attempts, chat_request, completion_id, model, use_tools, served),
+            _stream(
+                attempts, chat_request, completion_id, model, use_tools, served,
+                tool_names(tool_defs),
+            ),
             media_type="text/event-stream",
             headers=fmt.SSE_HEADERS,
         )
 
     try:
         content, tool_calls = await collect(
-            generate_with_failover(attempts, chat_request, served), use_tools
+            generate_with_failover(attempts, chat_request, served),
+            use_tools,
+            tool_names(tool_defs),
         )
     except ProviderError as exc:
         return provider_error_response(exc)
@@ -300,6 +305,7 @@ async def _stream(
     model: str,
     use_tools: bool,
     served: Served,
+    names: set[str] = frozenset(),
 ) -> AsyncIterator[str]:
     yield fmt.sse(fmt.chunk(completion_id, model, delta={"role": "assistant"}))
     tool_index = 0
@@ -307,7 +313,7 @@ async def _stream(
 
     try:
         deltas = generate_with_failover(attempts, chat_request, served)
-        async for event in parse_events(deltas, use_tools):
+        async for event in parse_events(deltas, use_tools, names):
             # Resolved per event, not once: which backend answered is only known
             # after the first delta arrives (see Served).
             served_model = served.label(model)

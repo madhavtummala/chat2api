@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 venv/
 .env
+.env.*
 # Browser profiles hold logged-in cookies/session — never commit them.
 .browser_profile/
 .perplexity_profile/

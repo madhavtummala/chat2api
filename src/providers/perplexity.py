@@ -12,7 +12,7 @@ How Perplexity differs from ExpressAI (all handled transparently):
     harmless no-op (search happens regardless).
   * Chats are saved to the account's library by default, so we self-enable
     incognito (see :meth:`enable_incognito`) to keep proxied chats out of it.
-  * Tools/MCP work the same as any other provider (text-based ``<tool_call>``
+  * Tools/MCP work the same as any other provider (text-based ``⟦tool_call⟧``
     emulation); a client just wouldn't send a *web-search* tool since it's native.
   * Threading works exactly as for ExpressAI (see BrowserChatProvider): a
     /v1/chat/completions request is one fresh thread with the full transcript
@@ -110,7 +110,7 @@ class PerplexityProvider(BrowserChatProvider):
         "Kimi K2.6",
         "Nemotron 3 Ultra",
     )
-    #  - tools: same text-based <tool_call> emulation as every other provider,
+    #  - tools: same text-based ⟦tool_call⟧ emulation as every other provider,
     #    so clients can supply their own (custom / MCP) tools.
     #  - web_search: native and always on — there's no toggle to drive.
     #  - attachments: it supports file upload.

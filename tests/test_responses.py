@@ -34,7 +34,7 @@ class ToolThenAnswerProvider(BaseChatProvider):
         if tool_result is not None:
             yield f"The tool said: {tool_result}"
         else:
-            yield '<tool_call>{"name": "mock__echo", "arguments": {"text": "ping"}}</tool_call>'
+            yield '⟦tool_call⟧{"name": "mock__echo", "arguments": {"text": "ping"}}⟦/tool_call⟧'
 
 
 class SessionProvider(BaseChatProvider):
@@ -69,7 +69,7 @@ class _FakeSession:
         self._p.sends.append([(m.role, m.content) for m in request.messages])
         turn, self._turn = self._turn, self._turn + 1
         if turn == 0:
-            yield '<tool_call>{"name": "mock__echo", "arguments": {"text": "ping"}}</tool_call>'
+            yield '⟦tool_call⟧{"name": "mock__echo", "arguments": {"text": "ping"}}⟦/tool_call⟧'
         else:
             tool = next((c for r, c in self._p.sends[-1] if r == "tool"), None)
             yield f"The tool said: {tool}"
@@ -177,7 +177,7 @@ async def test_continuation_sends_system_prompt_once_then_deltas(mcp):
 
 
 async def test_unknown_tool_requires_action():
-    provider = FakeProvider(deltas=['<tool_call>{"name": "client_fn", "arguments": {}}</tool_call>'])
+    provider = FakeProvider(deltas=['⟦tool_call⟧{"name": "client_fn", "arguments": {}}⟦/tool_call⟧'])
     async with client_for(make_app(provider)) as client:
         body = (
             await client.post(

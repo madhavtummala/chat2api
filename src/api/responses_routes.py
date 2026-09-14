@@ -36,7 +36,7 @@ from .routes import (
     resolve_provider,
     validate_model,
 )
-from .tool_runtime import collect, resolve_tools
+from .tool_runtime import collect, resolve_tools, tool_names
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -153,7 +153,7 @@ async def _run_loop(
                 reasoning_effort=body.resolve_reasoning_effort(),
             )
             stream = provider.generate(request) if session is None else session.send(request)
-            text, tool_calls = await collect(stream, use_tools)
+            text, tool_calls = await collect(stream, use_tools, tool_names(tool_defs))
             if text:
                 final_text = text
 
