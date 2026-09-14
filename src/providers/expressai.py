@@ -85,7 +85,7 @@ class ExpressAIProvider(BrowserChatProvider):
         "Nemotron 12B",
         "DeepSeek R1 Distill 32B",
         "Qwen2.5-VL 32B",
-        "Qwen3.5 35B-A3B",
+        "Qwen3.8 27B",
         "Gemma 4 31B",
     )
     supports_tools = True  # via text-based tool-call emulation
