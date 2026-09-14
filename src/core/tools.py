@@ -69,14 +69,24 @@ def _loads(arguments: str) -> Any:
 #: A fenced code block, with or without a language tag.
 _FENCE = re.compile(r"```[a-zA-Z]*\n(.*?)```", re.DOTALL)
 
+#: A call written as ``call:web_search{"query": "..."}`` — a third notation
+#: models reach for, where the tool name sits *outside* the JSON and the object
+#: is the bare arguments. The object alone carries no ``name``, so the passes
+#: below cannot recognise it; the name has to be read off the prefix.
+_PREFIXED = re.compile(
+    r"(?:call|tool_call|function_call)\s*[:=]\s*([A-Za-z0-9_.\-]+)\s*\(?\s*(?=\{)",
+    re.IGNORECASE,
+)
+
 
 def normalize_tool_calls(text: str, names: Collection[str]) -> str:
     """Rewrite calls the model wrote in its *own* notation into our sentinels.
 
     Instruction-tuned models are heavily trained to present a function call as a
-    fenced ``json`` block, or as a bare JSON object after a sentence of
-    narration, and a mid-size model will often do that no matter how the
-    preamble asks. Those replies carry a perfectly good call that we would
+    fenced ``json`` block, as a bare JSON object after a sentence of narration,
+    or as ``call:name{...}`` with the name outside the JSON, and a mid-size
+    model will often do that no matter how the preamble asks. Those replies
+    carry a perfectly good call that we would
     otherwise hand back as prose — the client sees the model "describing" a
     call it actually made.
 
@@ -109,12 +119,28 @@ def normalize_tool_calls(text: str, names: Collection[str]) -> str:
     if OPEN in text:
         return text
 
-    # Then any bare object sitting in prose. raw_decode finds where each one
-    # ends, so a call embedded mid-sentence is lifted without guessing.
+    # Then any bare object sitting in prose, and any `call:name{...}` prefix.
+    # raw_decode finds where each object ends, so a call embedded mid-sentence
+    # is lifted without guessing.
     decoder = json.JSONDecoder()
     out: list[str] = []
     i = 0
     while i < len(text):
+        prefixed = _PREFIXED.match(text, i)
+        if prefixed and prefixed.group(1) in names:
+            try:
+                args, end = decoder.raw_decode(text, prefixed.end())
+            except ValueError:
+                args = None
+            if isinstance(args, dict):
+                out.append(
+                    OPEN
+                    + json.dumps({"name": prefixed.group(1), "arguments": args})
+                    + CLOSE
+                )
+                # Step over a closing paren belonging to a `name({...})` form.
+                i = end + 1 if text[end:end + 1] == ")" else end
+                continue
         if text[i] != "{":
             out.append(text[i])
             i += 1

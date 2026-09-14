@@ -5,6 +5,7 @@ from src.core.tools import (
     ToolCallEvent,
     ToolCallParser,
     build_tools_preamble,
+    normalize_tool_calls,
 )
 
 
@@ -86,3 +87,40 @@ def test_preamble_lists_tool_names():
     assert "get_weather" in preamble
     assert OPEN in preamble
     assert "MUST" in preamble
+
+
+def _normalized(text: str, names=("web_search",)) -> list:
+    return _run([normalize_tool_calls(text, set(names))])
+
+
+def test_prefixed_call_notation_becomes_a_call():
+    events = _normalized('call:web_search{"query": "why did XSD move today"}')
+    assert _text(events) == ""
+    (call,) = _calls(events)
+    assert call.name == "web_search"
+    assert call.arguments == '{"query": "why did XSD move today"}'
+
+
+def test_prefixed_calls_run_together_are_all_recovered():
+    blob = (
+        'call:web_search{"query": "why did XSD move today 2026-09-14"}'
+        'call:web_search{"query": "IBIT price move 2026-09-14"}'
+        'call:web_search{"query": "IAU gold price move 2026-09-14"}'
+    )
+    events = _normalized(blob)
+    assert _text(events) == ""
+    assert [c.name for c in _calls(events)] == ["web_search"] * 3
+
+
+def test_prefixed_call_with_narration_and_parens():
+    events = _normalized('Let me look.\ncall: web_search({"query": "gold"})')
+    assert _text(events).strip() == "Let me look."
+    (call,) = _calls(events)
+    assert call.arguments == '{"query": "gold"}'
+
+
+def test_prefixed_call_for_unadvertised_tool_stays_prose():
+    text = 'call:rm_rf{"path": "/"}'
+    events = _normalized(text)
+    assert _text(events) == text
+    assert _calls(events) == []
