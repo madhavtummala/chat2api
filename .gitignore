@@ -14,5 +14,8 @@ mcp.json
 *.egg-info/
 .DS_Store
 
+# prompt audits hold whole conversations
+logs/
+
 # probe/debug artifacts
 scripts/inspect_out.*

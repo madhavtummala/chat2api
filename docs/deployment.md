@@ -137,6 +137,10 @@ All settings use the `CHAT2API_` env prefix (optionally via a `.env` file).
 | `API_KEYS` | *(empty)* | Comma-separated bearer keys; empty = auth off |
 | `PROVIDERS` | *(empty)* | Ordered list of routable providers; empty = all registered |
 | `MCP_CONFIG_PATH` | `mcp.json` | MCP server config; auto-loaded when present |
+| `AUDIT_PROMPTS` | `false` | Log a per-request prompt breakdown ([docs](prompt-audit.md)) |
+| `AUDIT_DIR` | `logs/audit` | Where the audit JSONL and raw bodies are written |
+| `AUDIT_SAVE_BODIES` | `true` | Keep each raw request body alongside the summary |
+| `AUDIT_LIMIT_CHARS` | `100000` | Prompt length flagged as over the UI's cap (`0` = off) |
 | `ENABLE_RESPONSES` | `true` | Expose `/v1/responses` (agentic loop + MCP execution) |
 | `MAX_AGENT_TURNS` | `6` | Max model↔tool round-trips per `/v1/responses` request |
 | `HEADLESS` | `true` | Run Chromium headless (`false` for login / Cloudflare) |
