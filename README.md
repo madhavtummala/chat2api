@@ -68,6 +68,7 @@ Full walkthrough in [Providers → Adding a provider](docs/providers.md#adding-a
 - **[API](docs/api.md)** — endpoints, model routing, tool calls & MCP, capabilities.
 - **[Providers](docs/providers.md)** — built-in backends, adding & tuning your own.
 - **[Auto-login](docs/auto-login.md)** — renewing an expired session unattended, incl. emailed 2FA codes.
+- **[Prompt audit](docs/prompt-audit.md)** — per-request breakdown of what fills the prompt, when a client overruns the UI's length cap.
 
 ## Tests
 

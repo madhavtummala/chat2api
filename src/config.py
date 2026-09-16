@@ -35,6 +35,21 @@ class Settings(BaseSettings):
     # Providers are instantiated lazily and their tabs warmed on first use.
     providers: str = ""
 
+    # ---- Prompt audit ----------------------------------------------------
+    # Log a per-request breakdown of what fills the prompt (system prompt, tool
+    # schemas, injected reminders/skills, tool outputs). Off by default: it
+    # writes every request to disk, which is fine for a local debugging server
+    # and wrong for anything shared.
+    audit_prompts: bool = False
+    # Where the JSONL summary and raw bodies are written (relative to the CWD).
+    audit_dir: str = "logs/audit"
+    # Also keep the full request body, so a breakdown can be re-derived later.
+    # Bodies hold the entire conversation — treat the directory as sensitive.
+    audit_save_bodies: bool = True
+    # Prompt length the target UI accepts, in characters. Requests over it are
+    # flagged in the log. 0 disables the check.
+    audit_limit_chars: int = 100_000
+
     # ---- MCP -------------------------------------------------------------
     # Path to a JSON file describing MCP servers: {"servers": [{"label":...}]}.
     # Their tools are advertised to the model via prompt injection. Defaults to

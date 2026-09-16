@@ -13,6 +13,7 @@ from ..config import Settings, settings
 from ..core.errors import AuthenticationRequired
 from ..mcp_bridge import McpManager, load_specs
 from ..providers import ProviderRouter, available_providers
+from .audit import AuditMiddleware
 from .responses_routes import router as responses_router
 from .routes import router
 from .sessions import SessionStore
@@ -120,6 +121,14 @@ def create_app(config: Settings | None = None) -> FastAPI:
     app.include_router(router)
     if config.enable_responses:
         app.include_router(responses_router)
+    if config.audit_prompts:
+        logger.info("Prompt audit enabled; writing to %s", config.audit_dir)
+        app.add_middleware(
+            AuditMiddleware,
+            audit_dir=config.audit_dir,
+            save_bodies=config.audit_save_bodies,
+            limit_chars=config.audit_limit_chars,
+        )
     return app
 
 
